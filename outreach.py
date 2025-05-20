@@ -159,18 +159,23 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
         needs_extraction = profile.get('needs_email_extraction')
         if needs_extraction is None:
             needs_extraction = True  # Default to processing if field is missing
+        
+        email = profile.get('email')
             
-        if profile.get('email') and not needs_extraction:
-            # If we already have an email and don't need re-extraction, use it
-            email_mapping[username] = profile.get('email')
-            progress_update("email_detail", f"Using existing email for {username}: {profile.get('email')}", 
-                          {"username": username, "email": profile.get('email'), "from_cache": True})
+        if email and email != "null" and not needs_extraction:
+            # If we already have a valid email (not null) and don't need re-extraction, use it
+            email_mapping[username] = email
+            progress_update("email_detail", f"Using existing email for {username}: {email}", 
+                          {"username": username, "email": email, "from_cache": True})
         elif username in profiles and profiles[username].get('bio'):
             # Add to processing list if:
             # - It needs email extraction (bio changed or new profile)
-            # - Or it doesn't have an email yet
+            # - Or it doesn't have a valid email yet
             # - And it has a bio to extract from
             usernames_to_process.append(username)
+            if email == "null":
+                progress_update("email_detail", f"Re-extracting email for {username} (previous was null)", 
+                              {"username": username, "from_cache": False})
     
     progress_update("emails", f"Found {len(email_mapping)} existing emails in database that don't need re-extraction", 
                    {"existing_emails": len(email_mapping)})
@@ -241,12 +246,14 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
         # Add all processed usernames (even those without emails) to mark them as processed
         no_email_usernames = processed_usernames - set(new_emails.keys())
         for username in no_email_usernames:
+            # Store as None, not "null" string
             new_emails[username] = None
             progress_update("email_detail", f"No email found for {username}", 
-                          {"username": username, "from_ai": True})
+                          {"username": username, "from_ai": True, "email": None})
         
-        email_count = len([e for e in new_emails.values() if e])
-        progress_update("emails", f"Found {email_count} new emails from {len(bio_data)} bios", 
+        # Count valid emails (not None and not "null" string)
+        email_count = len([e for e in new_emails.values() if e and e != "null"])
+        progress_update("emails", f"Found {email_count} new valid emails from {len(bio_data)} bios", 
                        {"new_emails": email_count, "processed_bios": len(bio_data)})
         
         # Save results to database and reset flags
@@ -297,13 +304,15 @@ async def main():
         # Extract emails - 40-60% of progress
         progress_update("emails", "Extracting emails from user bios...", {"profile_count": len(user_profiles), "percent": 45})
         emails = await extract_emails_from_bios(user_profiles)
-        email_count = len([e for e in emails.values() if e])
-        progress_update("emails", f"Found {email_count} emails out of {len(usernames)} usernames", 
+        # Count valid emails (not None and not "null" string)
+        email_count = len([e for e in emails.values() if e and e != "null"])
+        progress_update("emails", f"Found {email_count} valid emails out of {len(usernames)} usernames", 
                        {"email_count": email_count, "username_count": len(usernames), "percent": 55})
         
-        # Filter usernames to only process those with emails
-        filtered_usernames = [username for username in usernames if emails.get(username)]
-        progress_update("emails", f"Found {len(filtered_usernames)} usernames with email", 
+        # Filter usernames to only process those with valid emails (not null)
+        filtered_usernames = [username for username in usernames 
+                             if emails.get(username) and emails.get(username) != "null"]
+        progress_update("emails", f"Found {len(filtered_usernames)} usernames with valid email", 
                        {"filtered_count": len(filtered_usernames), "percent": 60})
         
         # If no emails were found or no usernames with emails were found,

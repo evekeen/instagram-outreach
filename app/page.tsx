@@ -34,6 +34,8 @@ export default function Home() {
   const [outreachLogs, setOutreachLogs] = useState<string[]>([]);
   const [progressUpdates, setProgressUpdates] = useState<ProgressUpdate[]>([]);
   const [currentStage, setCurrentStage] = useState<ProgressStage | null>(null);
+  const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
+  const [isResetting, setIsResetting] = useState<boolean>(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
@@ -421,6 +423,55 @@ export default function Home() {
     if (currentIndex === -1) return 0;
     return Math.round((currentIndex / (stages.length - 1)) * 100);
   };
+  
+  // Function to reset the database
+  const resetDatabase = async () => {
+    try {
+      setIsResetting(true);
+      
+      // Call the reset API
+      const response = await fetch('/api/reset-database', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: 'reset-token-12345' }) // Simple token for demo, use proper auth in production
+      });
+      
+      const result = await response.json();
+      
+      if (result.status === 'success') {
+        toast({
+          title: 'Database Reset',
+          description: 'Database has been cleared successfully.',
+          status: 'success',
+          duration: 5000,
+          isClosable: true,
+        });
+        
+        // Refresh the influencer list
+        await fetchInfluencersWithLoading();
+      } else {
+        toast({
+          title: 'Reset Failed',
+          description: result.message || 'Failed to reset database.',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+      }
+    } catch (error) {
+      console.error('Error resetting database:', error);
+      toast({
+        title: 'Reset Failed',
+        description: 'An error occurred while resetting the database.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setIsResetting(false);
+      setIsResetModalOpen(false);
+    }
+  };
 
   return (
     <Container maxW="container.xl" py={8}>
@@ -471,13 +522,24 @@ export default function Home() {
           )}
         </Box>
         
-        <Button
-          colorScheme="purple"
-          leftIcon={<span role="img" aria-label="search">🔍</span>}
-          onClick={() => setIsOutreachModalOpen(true)}
-        >
-          Find New Influencers
-        </Button>
+        <Box display="flex" gap={2}>
+          <Button
+            colorScheme="purple"
+            leftIcon={<span role="img" aria-label="search">🔍</span>}
+            onClick={() => setIsOutreachModalOpen(true)}
+          >
+            Find New Influencers
+          </Button>
+          
+          <Button
+            colorScheme="red"
+            variant="outline"
+            leftIcon={<span role="img" aria-label="delete">🗑️</span>}
+            onClick={() => setIsResetModalOpen(true)}
+          >
+            Reset Database
+          </Button>
+        </Box>
         
         <Box>
           <Box display="flex" gap={4} alignItems="center" mb={1}>
@@ -543,14 +605,7 @@ export default function Home() {
               Reset Filters
             </Button>
           )}
-          </Box>
-          
-          {/* Explanation of filters */}
-          <Text fontSize="xs" color="gray.500" textAlign="right">
-            {showOnlyWithEmail && showOnlyInfluencers 
-              ? "Filters are on by default to show only the most relevant profiles" 
-              : "Showing additional profiles that may not be suitable for outreach"}
-          </Text>
+          </Box>                    
         </Box>
       </Box>
       
@@ -985,6 +1040,52 @@ export default function Home() {
                 </Box>
               </>
             )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+      
+      {/* Reset Database Modal */}
+      <Modal isOpen={isResetModalOpen} onClose={() => !isResetting && setIsResetModalOpen(false)} isCentered>
+        <ModalOverlay bg="blackAlpha.300" backdropFilter="blur(10px)" />
+        <ModalContent maxWidth="500px" p={4}>
+          <ModalHeader color="red.500">Reset Database</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody pb={6}>
+            <Text fontWeight="bold" mb={4}>
+              Warning: This will permanently delete ALL data from the database!
+            </Text>
+            <Text mb={4}>
+              This action will remove all influencer data, including:
+            </Text>
+            <Box p={3} bg="gray.50" borderRadius="md" mb={4}>
+              <Text>• All influencer profiles</Text>
+              <Text>• All extracted emails</Text>
+              <Text>• All generated email drafts</Text>
+              <Text>• All outreach history and sent emails</Text>
+              <Text>• All cached hashtags and search results</Text>
+            </Box>
+            <Text fontWeight="bold" mb={4}>
+              This action cannot be undone. Are you sure you want to continue?
+            </Text>
+            
+            <Box display="flex" justifyContent="space-between" mt={6}>
+              <Button 
+                variant="outline" 
+                onClick={() => setIsResetModalOpen(false)}
+                isDisabled={isResetting}
+              >
+                Cancel
+              </Button>
+              <Button 
+                colorScheme="red" 
+                onClick={resetDatabase}
+                isLoading={isResetting}
+                loadingText="Resetting..."
+                leftIcon={<span role="img" aria-label="warning">⚠️</span>}
+              >
+                Yes, Delete All Data
+              </Button>
+            </Box>
           </ModalBody>
         </ModalContent>
       </Modal>
