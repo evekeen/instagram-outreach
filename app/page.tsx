@@ -1,12 +1,21 @@
 'use client';
 
-import { Box, Button, Container, Heading, Modal, ModalBody, ModalCloseButton, ModalContent, ModalHeader, ModalOverlay, Table, Tbody, Td, Text, Th, Thead, Tr, useToast, Spinner, Center } from '@chakra-ui/react';
-import { useState, useEffect } from 'react';
+import { Box, Button, Container, Heading, Modal, ModalBody, ModalCloseButton, ModalContent, ModalHeader, ModalOverlay, Table, Tbody, Td, Text, Th, Thead, Tr, useToast, Spinner, Center, Progress, Badge, Stack, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, Divider, Code, Flex } from '@chakra-ui/react';
+import { useState, useEffect, useRef } from 'react';
 import { Influencer } from './lib/db';
 
 interface EmailDraft {
   subject: string;
   body: string;
+}
+
+type ProgressStage = 'start' | 'hashtags' | 'profiles' | 'emails' | 'browser' | 'complete' | 'error' | 'warning';
+
+interface ProgressUpdate {
+  stage: ProgressStage;
+  message: string;
+  timestamp: number;
+  data?: any;
 }
 
 export default function Home() {
@@ -20,6 +29,13 @@ export default function Home() {
   const [showOnlyWithEmail, setShowOnlyWithEmail] = useState<boolean>(true);
   const [showOnlyInfluencers, setShowOnlyInfluencers] = useState<boolean>(true);
   const [filteredInfluencers, setFilteredInfluencers] = useState<Influencer[]>([]);
+  const [isOutreachModalOpen, setIsOutreachModalOpen] = useState<boolean>(false);
+  const [isRunningOutreach, setIsRunningOutreach] = useState<boolean>(false);
+  const [outreachLogs, setOutreachLogs] = useState<string[]>([]);
+  const [progressUpdates, setProgressUpdates] = useState<ProgressUpdate[]>([]);
+  const [currentStage, setCurrentStage] = useState<ProgressStage | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
   const fetchInfluencers = async (): Promise<void> => {
@@ -198,6 +214,204 @@ export default function Home() {
   useEffect(() => {
     fetchInfluencersWithLoading();
   }, []);
+  
+  // Polling interval for status updates
+  const [statusPollingInterval, setStatusPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  
+  // Scroll logs to bottom when new logs are added
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [outreachLogs]);
+  
+  // Clean up polling when component unmounts
+  useEffect(() => {
+    return () => {
+      if (statusPollingInterval) {
+        clearInterval(statusPollingInterval);
+      }
+    };
+  }, [statusPollingInterval]);
+  
+  // Function to poll for status updates
+  const pollStatus = async () => {
+    try {
+      const response = await fetch('/api/outreach-status');
+      const data = await response.json();
+      
+      // Update state with the latest data
+      if (data.logs) {
+        setOutreachLogs(data.logs.map((log: any) => log.message));
+      }
+      
+      if (data.progress) {
+        // Update current stage
+        setCurrentStage(data.progress.stage as ProgressStage);
+        
+        // Add to progress updates if it's a new update
+        const newUpdate = {
+          stage: data.progress.stage,
+          message: data.progress.message,
+          timestamp: data.progress.timestamp,
+          data: data.progress.data || {}
+        };
+        
+        setProgressUpdates(prev => {
+          // Only add if it's not already there (based on timestamp)
+          if (!prev.find(update => update.timestamp === newUpdate.timestamp)) {
+            return [...prev, newUpdate];
+          }
+          return prev;
+        });
+        
+        // Check if process is still running
+        if (!data.progress.is_running) {
+          setIsRunningOutreach(false);
+          
+          if (statusPollingInterval) {
+            clearInterval(statusPollingInterval);
+            setStatusPollingInterval(null);
+          }
+          
+          // Show toast notification
+          if (data.progress.stage === 'complete') {
+            toast({
+              title: 'Success',
+              description: data.progress.message,
+              status: 'success',
+              duration: 5000,
+              isClosable: true,
+            });
+            
+            // Refresh the influencer list
+            fetchInfluencersWithLoading();
+          } else if (data.progress.stage === 'error') {
+            toast({
+              title: 'Error',
+              description: data.progress.message,
+              status: 'error',
+              duration: 5000,
+              isClosable: true,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error polling status:', error);
+    }
+  };
+  
+  const runOutreach = async () => {
+    // Reset state
+    setOutreachLogs([]);
+    setProgressUpdates([]);
+    setCurrentStage(null);
+    setIsRunningOutreach(true);
+    
+    try {
+      // Start the outreach process
+      const response = await fetch('/api/run-outreach');
+      const data = await response.json();
+      
+      if (data.status === 'already_running') {
+        toast({
+          title: 'Process Already Running',
+          description: 'An outreach process is already running',
+          status: 'info',
+          duration: 3000,
+        });
+      } else if (data.status === 'error') {
+        toast({
+          title: 'Error',
+          description: data.message,
+          status: 'error',
+          duration: 3000,
+        });
+        setIsRunningOutreach(false);
+        return;
+      }
+      
+      // Start polling for updates
+      if (statusPollingInterval) {
+        clearInterval(statusPollingInterval);
+      }
+      
+      // Immediately get the first status
+      await pollStatus();
+      
+      // Then set up polling
+      const interval = setInterval(pollStatus, 1000);
+      setStatusPollingInterval(interval);
+      
+    } catch (error) {
+      console.error('Error starting outreach process:', error);
+      setOutreachLogs(prev => [...prev, `Setup error: ${error}`]);
+      setIsRunningOutreach(false);
+    }
+  };
+  
+  const stopOutreach = async () => {
+    try {
+      // Send stop command
+      const response = await fetch('/api/outreach-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'stop' })
+      });
+      
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        setOutreachLogs(prev => [...prev, 'Stop command sent. Waiting for process to stop...']);
+        
+        // Continue polling to see when it actually stops
+        if (!statusPollingInterval) {
+          const interval = setInterval(pollStatus, 1000);
+          setStatusPollingInterval(interval);
+        }
+      } else {
+        toast({
+          title: 'Error',
+          description: 'Failed to stop the process',
+          status: 'error',
+          duration: 3000,
+        });
+      }
+    } catch (error) {
+      console.error('Error stopping outreach process:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to send stop command',
+        status: 'error',
+        duration: 3000,
+      });
+    }
+  };
+  
+  const getStageColor = (stage: ProgressStage): string => {
+    switch (stage) {
+      case 'start': return 'blue';
+      case 'hashtags': return 'purple';
+      case 'profiles': return 'cyan';
+      case 'emails': return 'green';
+      case 'browser': return 'orange';
+      case 'complete': return 'green';
+      case 'error': return 'red';
+      case 'warning': return 'yellow';
+      default: return 'gray';
+    }
+  };
+  
+  const getProgressPercentage = (): number => {
+    if (!currentStage) return 0;
+    
+    const stages: ProgressStage[] = ['start', 'hashtags', 'profiles', 'emails', 'browser', 'complete'];
+    const currentIndex = stages.indexOf(currentStage);
+    
+    if (currentIndex === -1) return 0;
+    return Math.round((currentIndex / (stages.length - 1)) * 100);
+  };
 
   return (
     <Container maxW="container.xl" py={8}>
@@ -247,6 +461,14 @@ export default function Home() {
             </Text>
           )}
         </Box>
+        
+        <Button
+          colorScheme="purple"
+          leftIcon={<span role="img" aria-label="search">🔍</span>}
+          onClick={() => setIsOutreachModalOpen(true)}
+        >
+          Find New Influencers
+        </Button>
         
         <Box>
           <Box display="flex" gap={4} alignItems="center" mb={1}>
@@ -753,6 +975,161 @@ export default function Home() {
                   </Box>
                 </Box>
               </>
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+      
+      {/* Outreach Modal */}
+      <Modal isOpen={isOutreachModalOpen} onClose={() => !isRunningOutreach && setIsOutreachModalOpen(false)} size="xl">
+        <ModalOverlay bg="blackAlpha.300" backdropFilter="blur(10px)" />
+        <ModalContent
+          maxWidth="800px"
+          minHeight="500px"
+          boxShadow="xl"
+          borderRadius="xl"
+        >
+          <ModalHeader display="flex" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Heading size="lg">Find New Influencers</Heading>
+              <Text fontSize="sm" color="gray.500" mt={1}>
+                This will search Instagram hashtags for new influencers and add them to your database
+              </Text>
+            </Box>
+            {!isRunningOutreach && (
+              <ModalCloseButton position="static" />
+            )}
+          </ModalHeader>
+          
+          <ModalBody pb={6}>
+            {!isRunningOutreach ? (
+              <Box>
+                <Text mb={4}>
+                  This process will:
+                </Text>
+                <Box pl={4} mb={6}>
+                  <Text>1. Search Instagram hashtags for relevant posts</Text>
+                  <Text>2. Extract usernames of content creators</Text>
+                  <Text>3. Fetch profile information for each username</Text>
+                  <Text>4. Extract emails from user bios</Text>
+                  <Text>5. Verify if users are influencers by checking view counts</Text>
+                </Box>
+                
+                <Text fontSize="sm" color="gray.500" mb={6}>
+                  This process will take several minutes to complete as it needs to navigate to Instagram
+                  and analyze profiles. You can close this modal and come back later - the process will
+                  continue running in the background.
+                </Text>
+                
+                <Button
+                  colorScheme="purple"
+                  size="lg"
+                  width="100%"
+                  height="60px"
+                  onClick={runOutreach}
+                >
+                  Start Finding New Influencers
+                </Button>
+              </Box>
+            ) : (
+              <Box>
+                {/* Current status display */}
+                <Box mb={6}>
+                  <Text fontWeight="bold" mb={2}>Current Progress:</Text>
+                  <Progress 
+                    value={getProgressPercentage()} 
+                    size="lg" 
+                    colorScheme={currentStage ? getStageColor(currentStage) : 'gray'}
+                    borderRadius="md"
+                    hasStripe
+                    isAnimated
+                    mb={2}
+                  />
+                  
+                  <Flex justifyContent="space-between" fontSize="sm" color="gray.600">
+                    <Text>Search Hashtags</Text>
+                    <Text>Get Profiles</Text>
+                    <Text>Extract Emails</Text>
+                    <Text>Process Users</Text>
+                  </Flex>
+                  
+                  {currentStage && (
+                    <Badge colorScheme={getStageColor(currentStage)} mt={4} p={2} borderRadius="md">
+                      {currentStage.charAt(0).toUpperCase() + currentStage.slice(1)}
+                    </Badge>
+                  )}
+                </Box>
+                
+                <Box mb={4}>
+                  <Text fontWeight="bold" mb={2}>Activity Log:</Text>
+                  <Box 
+                    maxHeight="250px" 
+                    overflowY="auto" 
+                    p={3} 
+                    borderRadius="md" 
+                    bg="gray.50"
+                    border="1px solid"
+                    borderColor="gray.200"
+                    fontFamily="mono"
+                    fontSize="xs"
+                  >
+                    {outreachLogs.length > 0 ? (
+                      outreachLogs.map((log, index) => (
+                        <Text key={index} mb={1}>
+                          {log}
+                        </Text>
+                      ))
+                    ) : (
+                      <Text color="gray.500">Waiting for process to start...</Text>
+                    )}
+                    <div ref={logsEndRef} />
+                  </Box>
+                </Box>
+                
+                {/* Progress Details Accordion */}
+                <Accordion allowToggle mb={6}>
+                  <AccordionItem>
+                    <h2>
+                      <AccordionButton>
+                        <Box flex="1" textAlign="left">
+                          <Text fontWeight="bold">Progress Details</Text>
+                        </Box>
+                        <AccordionIcon />
+                      </AccordionButton>
+                    </h2>
+                    <AccordionPanel>
+                      <Stack spacing={3} mt={2}>
+                        {progressUpdates.length > 0 ? (
+                          progressUpdates.map((update, index) => (
+                            <Box key={index} p={2} borderRadius="md" bg={`${getStageColor(update.stage)}.50`} borderLeft="3px solid" borderColor={`${getStageColor(update.stage)}.500`}>
+                              <Text fontWeight="bold" fontSize="sm">
+                                {update.stage.charAt(0).toUpperCase() + update.stage.slice(1)}
+                              </Text>
+                              <Text fontSize="sm">{update.message}</Text>
+                              {update.data && Object.keys(update.data).length > 0 && (
+                                <Code fontSize="xs" mt={1} p={1}>
+                                  {JSON.stringify(update.data, null, 2)}
+                                </Code>
+                              )}
+                            </Box>
+                          ))
+                        ) : (
+                          <Text color="gray.500">No progress updates yet</Text>
+                        )}
+                      </Stack>
+                    </AccordionPanel>
+                  </AccordionItem>
+                </Accordion>
+                
+                <Button
+                  colorScheme="red"
+                  variant="outline"
+                  width="100%"
+                  onClick={stopOutreach}
+                >
+                  Stop Process
+                </Button>
+              </Box>
             )}
           </ModalBody>
         </ModalContent>

@@ -5,14 +5,30 @@ import asyncio
 import os
 import json
 import re
+import time
 from typing import List, Dict, Any, Optional
 from scraper import HashtagScraper
 from pydantic import BaseModel
 from client import ApifyHelper
 from openai import OpenAI
 from db_helper import DatabaseHelper
+import progress_monitor
 
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
+
+# Get the progress monitor
+monitor = progress_monitor.get_monitor("outreach")
+
+# Progress reporting function
+def progress_update(stage, message, data=None):
+    """Update progress using the monitor instead of print statements."""
+    # Update the progress file with structured data
+    monitor.update_progress(stage, message, data=data)
+    
+    # Check if we should stop
+    if monitor.should_stop():
+        monitor.log(f"Received stop command during stage: {stage}", "warning")
+        sys.exit(0)
 
 get_view_count = (    
     "Open the {username} user reels with a URL like this https://www.instagram.com/{username}/reels/ "
@@ -26,6 +42,7 @@ get_view_count = (
 
 async def get_usernames() -> List[str]:
     scraper = HashtagScraper()
+    progress_update("hashtags", "Fetching usernames from hashtags...")
     usernames = await scraper.get_usernames_from_hashtags()
     return sorted(list(usernames))
 
@@ -51,22 +68,25 @@ async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
     
     # Check which usernames we already have complete profile information for
     loaded_profiles = db.get_profiles_by_usernames(usernames)
-    print(f"Found {len(loaded_profiles)} existing profiles in database")
+    progress_update("profiles", f"Found {len(loaded_profiles)} existing profiles in database", 
+                   {"total": len(usernames), "existing": len(loaded_profiles)})
     
     # Add loaded profiles to our results
     for username, profile_data in loaded_profiles.items():
         if profile_data.get('full_name') and profile_data.get('bio'):
             profiles[username] = profile_data
-            print(f"Using existing profile for {username}")
+            progress_update("profile_detail", f"Using existing profile for {username}", 
+                           {"username": username, "from_cache": True})
     
     # Create list of usernames we still need to fetch
     usernames_to_fetch = [username for username in usernames if username not in profiles]
     
     if not usernames_to_fetch:
-        print("All profiles already in database, no need to call Apify")
+        progress_update("profiles", "All profiles already in database, no need to call Apify")
         return profiles
         
-    print(f"Fetching {len(usernames_to_fetch)} new profiles from Apify")
+    progress_update("profiles", f"Fetching {len(usernames_to_fetch)} new profiles from Apify", 
+                   {"to_fetch": len(usernames_to_fetch)})
     
     try:
         # The client.py already accepts an array of usernames
@@ -77,7 +97,9 @@ async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
             "proxy": apify.proxy_config
         }
         
+        progress_update("apify", "Starting Apify profile scraping job...")
         run = apify.client.actor(apify.profile_scraper_id).call(run_input=input_data)
+        progress_update("apify", "Fetching results from Apify dataset...")
         dataset_items = apify.client.dataset(run["defaultDatasetId"]).list_items().items
         
         for profile_data in dataset_items:
@@ -87,7 +109,8 @@ async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
                     'full_name': profile_data.get('fullName'),
                     'bio': profile_data.get('biography')
                 }
-                print(f'Got profile for {username}: {profiles[username]}')
+                progress_update("profile_detail", f"Got profile for {username}", 
+                              {"username": username, "from_cache": False})
         
         for username in usernames_to_fetch:
             if username not in profiles:
@@ -95,10 +118,11 @@ async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
                     'full_name': None,
                     'bio': None
                 }
-                print(f'No profile data found for {username}')
+                progress_update("profile_detail", f"No profile data found for {username}", 
+                              {"username": username, "error": True})
     
     except Exception as e:
-        print(f"Error fetching profiles for batch: {e}")
+        progress_update("error", f"Error fetching profiles for batch: {e}", {"error": str(e)})
         for username in usernames_to_fetch:
             if username not in profiles:
                 profiles[username] = {
@@ -112,7 +136,8 @@ async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
     
     if new_profiles:
         db.update_user_profiles(new_profiles)
-        print(f"Saved {len(new_profiles)} new user profiles to database")
+        progress_update("profiles", f"Saved {len(new_profiles)} new user profiles to database", 
+                       {"saved_count": len(new_profiles)})
     
     return profiles
 
@@ -138,7 +163,8 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
         if profile.get('email') and not needs_extraction:
             # If we already have an email and don't need re-extraction, use it
             email_mapping[username] = profile.get('email')
-            print(f"Using existing email for {username}: {profile.get('email')}")
+            progress_update("email_detail", f"Using existing email for {username}: {profile.get('email')}", 
+                          {"username": username, "email": profile.get('email'), "from_cache": True})
         elif username in profiles and profiles[username].get('bio'):
             # Add to processing list if:
             # - It needs email extraction (bio changed or new profile)
@@ -146,8 +172,10 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
             # - And it has a bio to extract from
             usernames_to_process.append(username)
     
-    print(f"Found {len(email_mapping)} existing emails in database that don't need re-extraction")
-    print(f"Need to process {len(usernames_to_process)} bios for email extraction")
+    progress_update("emails", f"Found {len(email_mapping)} existing emails in database that don't need re-extraction", 
+                   {"existing_emails": len(email_mapping)})
+    progress_update("emails", f"Need to process {len(usernames_to_process)} bios for email extraction", 
+                   {"to_process": len(usernames_to_process)})
     
     if not usernames_to_process:
         return email_mapping
@@ -158,7 +186,7 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
                          if data.get('bio')}
     
     if not profiles_with_bio:
-        print("No profiles with bio found for email extraction")
+        progress_update("emails", "No profiles with bio found for email extraction")
         return email_mapping
     
     # Prepare the structured data for ChatGPT
@@ -181,7 +209,8 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
                  f"Format your response as a JSON array of objects with 'username' and 'email' fields.")
     
     try:
-        print("Sending bios to ChatGPT for email extraction...")
+        progress_update("openai", "Sending bios to ChatGPT for email extraction...", 
+                       {"bio_count": len(bio_data)})
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             response_format=EmailMapping,
@@ -206,27 +235,34 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
             if username and email:
                 email_mapping[username] = email
                 new_emails[username] = email
+                progress_update("email_detail", f"Found email for {username}: {email}", 
+                              {"username": username, "email": email, "from_ai": True})
         
         # Add all processed usernames (even those without emails) to mark them as processed
         no_email_usernames = processed_usernames - set(new_emails.keys())
         for username in no_email_usernames:
             new_emails[username] = None
+            progress_update("email_detail", f"No email found for {username}", 
+                          {"username": username, "from_ai": True})
         
         email_count = len([e for e in new_emails.values() if e])
-        print(f"Found {email_count} new emails from {len(bio_data)} bios")
+        progress_update("emails", f"Found {email_count} new emails from {len(bio_data)} bios", 
+                       {"new_emails": email_count, "processed_bios": len(bio_data)})
         
         # Save results to database and reset flags
         if new_emails:
             updated = db.update_emails(new_emails)
-            print(f"Saved {updated} new emails to database, marked {len(new_emails)} profiles as processed")
+            progress_update("emails", f"Saved {updated} new emails to database, marked {len(new_emails)} profiles as processed", 
+                           {"updated_count": updated, "processed_count": len(new_emails)})
         
         return email_mapping
     
     except Exception as e:
-        print(f"Error extracting emails with ChatGPT: {e}")
+        progress_update("error", f"Error extracting emails with ChatGPT: {e}", {"error": str(e)})
         return email_mapping
 
 async def main():
+    progress_update("start", "Starting outreach process...")
     db = DatabaseHelper()
     max_retry_attempts = 3
     current_attempt = 0
@@ -235,6 +271,8 @@ async def main():
     while current_attempt < max_retry_attempts:
         # Get usernames from hashtags
         # If all usernames are already in the DB, the scraper will automatically increase the results limit and retry
+        progress_update("hashtags", f"Getting usernames from hashtags (attempt {current_attempt+1}/{max_retry_attempts})", 
+                        {"attempt": current_attempt+1, "max_attempts": max_retry_attempts})
         scraper = HashtagScraper()
         usernames = await scraper.get_usernames_from_hashtags(max_retries=3, initial_limit=initial_limit)
         usernames = list(usernames)
@@ -243,21 +281,28 @@ async def main():
         original_count = len(usernames)
         test_mode = False
         if test_mode and original_count > 10:
-            print(f"Testing mode: Limiting to 10 usernames out of {original_count}")
+            progress_update("hashtags", f"Testing mode: Limiting to 10 usernames out of {original_count}", 
+                           {"original_count": original_count, "limited_count": 10, "test_mode": True})
             usernames = usernames[:10]
-        print(f'Found {len(usernames)} usernames: {usernames}')
+        
+        progress_update("hashtags", f"Found {len(usernames)} usernames", 
+                       {"username_count": len(usernames), "usernames": usernames})
         
         # Get user profiles
+        progress_update("profiles", "Fetching user profiles...", {"username_count": len(usernames)})
         user_profiles = await get_user_profiles(usernames)
         
         # Extract emails
+        progress_update("emails", "Extracting emails from user bios...", {"profile_count": len(user_profiles)})
         emails = await extract_emails_from_bios(user_profiles)
         email_count = len([e for e in emails.values() if e])
-        print(f'Found {email_count} emails out of {len(usernames)} usernames')
+        progress_update("emails", f"Found {email_count} emails out of {len(usernames)} usernames", 
+                       {"email_count": email_count, "username_count": len(usernames)})
         
         # Filter usernames to only process those with emails
         filtered_usernames = [username for username in usernames if emails.get(username)]
-        print(f'Found {len(filtered_usernames)} usernames with email')
+        progress_update("emails", f"Found {len(filtered_usernames)} usernames with email", 
+                       {"filtered_count": len(filtered_usernames)})
         
         # If no emails were found or no usernames with emails were found,
         # and we haven't reached the maximum number of retries, increase the result limit and try again
@@ -272,8 +317,8 @@ async def main():
             # Use the smaller increase
             initial_limit = min(increase_by_double, increase_by_50)
             
-            print(f"No emails found. Attempt {current_attempt}/{max_retry_attempts}: " 
-                  f"Increasing result limit to {initial_limit} and trying again.")
+            progress_update("retry", f"No emails found. Attempt {current_attempt}/{max_retry_attempts}: Increasing result limit to {initial_limit}",
+                           {"attempt": current_attempt, "max_attempts": max_retry_attempts, "new_limit": initial_limit})
             continue
         
         # If we found emails or reached the maximum number of retries, break the loop
@@ -288,11 +333,13 @@ async def main():
     ctrl = Controller(output_model=Influencer)
     
     # We already calculated filtered_usernames above
-    print(f'Processing {len(filtered_usernames)} usernames with emails: {filtered_usernames}')
+    progress_update("browser", f"Processing {len(filtered_usernames)} usernames with emails", 
+                   {"username_count": len(filtered_usernames), "usernames": filtered_usernames})
     
     # Process each username
-    for username in filtered_usernames:
-        print(f'Processing {username}')
+    for i, username in enumerate(filtered_usernames):
+        progress_update("browser", f"Processing {username} ({i+1}/{len(filtered_usernames)})", 
+                       {"username": username, "current": i+1, "total": len(filtered_usernames)})
         browser = Browser(
             config=BrowserConfig(
                 browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',         
@@ -301,12 +348,14 @@ async def main():
         )
         try:
             async with await browser.new_context() as ctx:
+                progress_update("browser_detail", f"Launching browser for {username}...", {"username": username})
                 agent = Agent(
                     task=get_view_count.format(username=username),
                     llm=ChatOpenAI(model='gpt-4o'),
                     browser=browser,
                     controller=ctrl,
                 )
+                progress_update("browser_detail", f"Running agent to check if {username} is an influencer...", {"username": username})
                 history = await agent.run()
                 data = Influencer.model_validate_json(history.final_result())
                 
@@ -316,7 +365,8 @@ async def main():
                 data.bio = profile_data.get('bio')
                 data.email = profile_data.get('email')
                 
-                print(f'{username} - {data}')
+                progress_update("browser_detail", f"{username} - is_influencer: {data.is_influencer}", 
+                              {"username": username, "is_influencer": data.is_influencer})
                 
                 # Save the influencer data to the database
                 db.save_influencer(
@@ -326,19 +376,22 @@ async def main():
                     bio=data.bio,
                     email=data.email
                 )
+                progress_update("browser_detail", f"Saved {username} data to database", {"username": username})
                 
                 await ctx.close()
         except Exception as e:
-            print(f"Error processing {username}: {e}")
+            progress_update("error", f"Error processing {username}: {e}", {"username": username, "error": str(e)})
         finally:
             await browser.close()
 
         # delay for 5 seconds
+        progress_update("browser_detail", f"Waiting 5 seconds before the next profile...", {"username": username})
         await asyncio.sleep(5)
     
     # Get all influencers from the database
     influencers = db.get_influencers()
-    print(f"Found {len(influencers)} influencers in the database")
+    progress_update("complete", f"Process completed. Found {len(influencers)} influencers in the database", 
+                   {"influencer_count": len(influencers)})
 
 # Check if the database needs migration before running
 def check_db_columns():
@@ -356,23 +409,55 @@ def check_db_columns():
         columns = [col[1] for col in cursor.fetchall()]
         
         if 'needs_email_extraction' not in columns:
-            print("=" * 80)
-            print("WARNING: Your database is missing required columns for efficient email extraction.")
-            print("Please run 'python migrate_add_columns.py' to update your database schema.")
-            print("=" * 80)
+            progress_update("warning", "Your database is missing required columns for efficient email extraction. " +
+                           "Please run 'python migrate_add_columns.py' to update your database schema.", 
+                           {"missing_columns": ["needs_email_extraction"]})
             return False
             
         return True
     except Exception as e:
-        print(f"Error checking database columns: {e}")
+        progress_update("error", f"Error checking database columns: {e}", {"error": str(e)})
         return False
     finally:
         if 'conn' in locals():
             conn.close()
 
+async def run_with_monitoring():
+    """Run the main function with proper monitoring and error handling."""
+    try:
+        monitor.log(f"Python version: {sys.version}")
+        monitor.log(f"Current directory: {os.getcwd()}")
+        monitor.log(f"Files in current directory: {os.listdir('.')}")
+        
+        # Send an initial progress update
+        progress_update("start", "Outreach process is initializing...", {"python_version": sys.version})
+        
+        # Check if the database needs migration
+        check_db_columns()
+        
+        # Run the main function
+        progress_update("start", "Starting main outreach process...")
+        await main()
+        
+        # Mark as complete
+        monitor.mark_complete("Outreach process completed successfully")
+        
+    except KeyboardInterrupt:
+        monitor.log("Process was interrupted by user", "warning")
+        monitor.mark_failed("Process was interrupted by user")
+        
+    except Exception as e:
+        error_message = f"Error in outreach process: {str(e)}"
+        monitor.log(error_message, "error")
+        monitor.mark_failed(error_message)
+        import traceback
+        monitor.log(traceback.format_exc(), "error")
+        raise
+
 if __name__ == '__main__':
-    # Check if the database needs migration
-    check_db_columns()
+    # Initialize control file to "run"
+    with open("outreach_control.json", 'w') as f:
+        json.dump({"command": "run", "timestamp": time.time()}, f)
     
-    # Run the main function
-    asyncio.run(main())
+    # Run the main function with monitoring
+    asyncio.run(run_with_monitoring())
