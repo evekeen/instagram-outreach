@@ -39,6 +39,7 @@ export default function Home() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
+  const isFirstRenderRef = useRef<boolean>(true);
 
   const fetchInfluencers = async (): Promise<void> => {
     try {
@@ -212,13 +213,21 @@ export default function Home() {
     applyFilters();
   }, [influencers, showOnlyWithEmail, showOnlyInfluencers]);
 
-  // Replace the useEffect to use the new function
+  // Replace the useEffect to use the new function and check process status on mount
   useEffect(() => {
     fetchInfluencersWithLoading();
+    
+    // Check if there's a running outreach process on initial load
+    checkOutreachStatus();
+    
+    // Mark as not first render anymore
+    isFirstRenderRef.current = false;
   }, []);
   
   // Polling interval for status updates
   const [statusPollingInterval, setStatusPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  // Add state to track if we've already shown a stopped notification
+  const [stoppedNotificationShown, setStoppedNotificationShown] = useState<boolean>(false);
   
   // Scroll logs to bottom when new logs are added
   useEffect(() => {
@@ -236,11 +245,146 @@ export default function Home() {
     };
   }, [statusPollingInterval]);
   
+  // Check outreach status when modal is opened
+  useEffect(() => {
+    if (isOutreachModalOpen) {
+      checkOutreachStatus();
+    }
+  }, [isOutreachModalOpen, statusPollingInterval]);
+  
+  // Function to check current outreach status
+  const checkOutreachStatus = async () => {
+    try {
+      const response = await fetch('/api/outreach-status');
+      const data = await response.json();
+      
+      // If a process is running, update UI state accordingly
+      if (data.status === 'running') {
+        setIsRunningOutreach(true);
+        // Reset the stopped notification flag when process starts running
+        setStoppedNotificationShown(false);
+        
+        // If this is the initial check and we found a running process,
+        // automatically open the modal to show progress
+        if (isFirstRenderRef.current) {
+          setIsOutreachModalOpen(true);
+        }
+        
+        // Update logs and progress if available
+        if (data.logs) {
+          setOutreachLogs(data.logs.map((log: any) => log.message));
+        }
+        
+        if (data.progress) {
+          // Update current stage (skip detail stages)
+          if (!data.progress.stage.includes('_detail')) {
+            setCurrentStage(data.progress.stage as ProgressStage);
+          }
+          
+          // Add to progress updates
+          const newUpdate = {
+            stage: data.progress.stage,
+            message: data.progress.message,
+            timestamp: data.progress.timestamp,
+            data: data.progress.data || {}
+          };
+          
+          setProgressUpdates(prev => {
+            // Only add if it's not already there (based on timestamp)
+            if (!prev.find(update => update.timestamp === newUpdate.timestamp)) {
+              return [...prev, newUpdate];
+            }
+            return prev;
+          });
+        }
+        
+        // Start polling for updates if not already polling
+        if (!statusPollingInterval) {
+          const interval = setInterval(pollStatus, 1000);
+          setStatusPollingInterval(interval);
+        }
+      } else if ((data.status === 'not_running' || data.status === 'stopped' || data.status === 'error') && isRunningOutreach) {
+        // Reset the running state if process is not running but our UI still thinks it is
+        setIsRunningOutreach(false);
+        
+        // Clear polling if it exists
+        if (statusPollingInterval) {
+          clearInterval(statusPollingInterval);
+          setStatusPollingInterval(null);
+        }
+        
+        // If process is stopped, update stage and mark notification as shown
+        if (data.progress && data.progress.stage === 'stopped') {
+          setCurrentStage('stopped');
+          setStoppedNotificationShown(true);
+        }
+        
+        // Display appropriate message based on status - but only if we haven't shown a stopped notification yet
+        if (data.status === 'error' && data.progress) {
+          toast({
+            title: 'Error',
+            description: data.progress.message || 'An error occurred during the outreach process',
+            status: 'error',
+            duration: 5000,
+            isClosable: true,
+          });
+          
+          // Update the progress state to show error
+          setCurrentStage('error');
+          
+          // Add final error update to progress updates
+          const errorUpdate = {
+            stage: 'error',
+            message: data.progress.message || 'Process failed',
+            timestamp: data.progress.timestamp || Date.now(),
+            data: data.progress.data || {}
+          };
+          
+          setProgressUpdates(prev => {
+            if (!prev.find(update => update.timestamp === errorUpdate.timestamp)) {
+              return [...prev, errorUpdate];
+            }
+            return prev;
+          });
+        } else if (data.status === 'stopped' && data.progress && !stoppedNotificationShown) {
+          // Only show stopped message if we haven't shown it yet
+          toast({
+            title: 'Process Stopped',
+            description: data.progress.message || 'Outreach process has been stopped',
+            status: 'warning',
+            duration: 5000,
+            isClosable: true,
+          });
+          
+          // Update logs to reflect stopped status (only once)
+          setOutreachLogs(prev => [...prev, 'Process was stopped manually']);
+          
+          // Mark that we've shown the notification
+          setStoppedNotificationShown(true);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking outreach status:', error);
+    }
+  };
+  
   // Function to poll for status updates
   const pollStatus = async () => {
     try {
       const response = await fetch('/api/outreach-status');
       const data = await response.json();
+      
+      // If data status is not_running and we're not in running state, don't update anything
+      if (data.status === 'not_running' && !isRunningOutreach) {
+        return;
+      }
+      
+      // Check if process is running and update our state accordingly
+      if (data.status === 'running' && !isRunningOutreach) {
+        setIsRunningOutreach(true);
+        // Reset the stopped notification flag when process starts running
+        setStoppedNotificationShown(false);
+      }
       
       // Update state with the latest data
       if (data.logs) {
@@ -269,40 +413,107 @@ export default function Home() {
           return prev;
         });
         
-        // Check if process is still running
-        if (!data.progress.is_running) {
+        // Set running state based on progress data
+        const wasRunning = isRunningOutreach;
+        const isNowStopped = !data.progress.is_running;
+        
+        // Only update running state if it has changed
+        if (wasRunning && isNowStopped) {
           setIsRunningOutreach(false);
           
+          // Handle process end
           if (statusPollingInterval) {
             clearInterval(statusPollingInterval);
             setStatusPollingInterval(null);
           }
-          
-          // Show toast notification
+        } else if (!wasRunning && data.progress.is_running) {
+          setIsRunningOutreach(true);
+          setStoppedNotificationShown(false); // Reset notification flag
+        }
+        
+        // Check if process is finished and show appropriate notification
+        if (wasRunning && isNowStopped) {
+          // Show toast notification only once based on stage
           if (data.progress.stage === 'complete') {
             toast({
               title: 'Success',
-              description: data.progress.message,
+              description: data.progress.message || 'Outreach process completed successfully',
               status: 'success',
               duration: 5000,
               isClosable: true,
             });
             
+            // Add final message to logs
+            setOutreachLogs(prev => [...prev, 'Process completed successfully']);
+            
+            // Update the current stage
+            setCurrentStage('complete');
+            
             // Refresh the influencer list
             fetchInfluencersWithLoading();
+            
+            // Show a success message that will auto-close
+            setTimeout(() => {
+              toast({
+                title: 'Process Completed',
+                description: 'The outreach process has finished successfully. New influencers are now available in your database.',
+                status: 'success',
+                duration: 7000,
+                isClosable: true,
+              });
+            }, 3000);
           } else if (data.progress.stage === 'error') {
             toast({
               title: 'Error',
-              description: data.progress.message,
+              description: data.progress.message || 'An error occurred during the outreach process',
               status: 'error',
               duration: 5000,
               isClosable: true,
             });
+            
+            // Add error to logs
+            setOutreachLogs(prev => [...prev, `Error: ${data.progress.message || 'Process failed with an error'}`]);
+          } else if (data.progress.stage === 'stopped' && !stoppedNotificationShown) {
+            toast({
+              title: 'Process Stopped',
+              description: data.progress.message || 'Process was manually stopped',
+              status: 'warning',
+              duration: 5000,
+              isClosable: true,
+            });
+            
+            // Add stopped message to logs (only once)
+            setOutreachLogs(prev => [...prev, 'Process was stopped manually']);
+            
+            // Mark that we've shown the notification
+            setStoppedNotificationShown(true);
           }
+        }
+      }
+      
+      // Handle status transitions
+      if ((data.status === 'stopped' || data.status === 'error') && isRunningOutreach) {
+        setIsRunningOutreach(false);
+        
+        if (data.status === 'error' && !data.progress) {
+          // Handle error without progress data
+          toast({
+            title: 'Error',
+            description: data.message || 'An error occurred during the outreach process',
+            status: 'error',
+            duration: 5000,
+            isClosable: true,
+          });
+          
+          setCurrentStage('error');
+          setOutreachLogs(prev => [...prev, `Error: ${data.message || 'Unknown error occurred'}`]);
         }
       }
     } catch (error) {
       console.error('Error polling status:', error);
+      
+      // On network error, don't stop polling entirely, but log the error
+      setOutreachLogs(prev => [...prev, `Network error: Unable to check status (${error})`]);
     }
   };
   
@@ -357,6 +568,10 @@ export default function Home() {
   
   const stopOutreach = async () => {
     try {
+      // Mark notification as shown immediately when user manually stops
+      // This prevents duplicate notifications
+      setStoppedNotificationShown(true);
+      
       // Send stop command
       const response = await fetch('/api/outreach-status', {
         method: 'POST',
@@ -368,6 +583,14 @@ export default function Home() {
       
       if (data.status === 'success') {
         setOutreachLogs(prev => [...prev, 'Stop command sent. Waiting for process to stop...']);
+        
+        // Manually show a toast since we'll suppress automatic ones
+        toast({
+          title: 'Stopping Process',
+          description: 'Stop command sent. The process will stop shortly.',
+          status: 'info',
+          duration: 3000,
+        });
         
         // Continue polling to see when it actually stops
         if (!statusPollingInterval) {
@@ -410,10 +633,15 @@ export default function Home() {
   const getProgressPercentage = (): number => {
     if (!currentStage) return 0;
     
-    // If we have a percent value from the server, use that directly
-    const lastUpdate = progressUpdates[progressUpdates.length - 1];
-    if (lastUpdate?.data?.percent) {
-      return lastUpdate.data.percent;
+    // Find the most recent percent value from any update
+    // Sort in reverse order to find the most recent first
+    const sortedUpdates = [...progressUpdates].sort((a, b) => b.timestamp - a.timestamp);
+    
+    // Look for the latest updates with percent data
+    for (const update of sortedUpdates) {
+      if (update.data?.percent) {
+        return update.data.percent;
+      }
     }
     
     // Otherwise calculate based on stage
@@ -514,7 +742,6 @@ export default function Home() {
       
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={6}>
         <Box>
-          <Heading>Influencer Manager</Heading>
           {influencers.length > 0 && (
             <Text fontSize="sm" color="gray.500" mt={1}>
               Showing {filteredInfluencers.length} of {influencers.length} influencers
@@ -1076,7 +1303,11 @@ export default function Home() {
       </Modal>
       
       {/* Outreach Modal */}
-      <Modal isOpen={isOutreachModalOpen} onClose={() => !isRunningOutreach && setIsOutreachModalOpen(false)} size="xl">
+      <Modal 
+        isOpen={isOutreachModalOpen} 
+        onClose={() => !isRunningOutreach && setIsOutreachModalOpen(false)} 
+        size="xl"
+      >
         <ModalOverlay bg="blackAlpha.300" backdropFilter="blur(10px)" />
         <ModalContent
           maxWidth="800px"
@@ -1131,22 +1362,81 @@ export default function Home() {
                 {/* Current status display */}
                 <Box mb={6}>
                   <Text fontWeight="bold" mb={2}>Current Progress:</Text>
-                  <Progress 
-                    value={getProgressPercentage()} 
-                    size="lg" 
-                    colorScheme={currentStage ? getStageColor(currentStage) : 'gray'}
-                    borderRadius="md"
-                    hasStripe
-                    isAnimated
-                    mb={2}
-                  />
                   
-                  <Flex justifyContent="space-between" fontSize="sm" color="gray.600">
-                    <Text>Search Hashtags</Text>
-                    <Text>Get Profiles</Text>
-                    <Text>Extract Emails</Text>
-                    <Text>Process Users</Text>
-                  </Flex>
+                  {currentStage === 'error' ? (
+                    <Box p={4} bg="red.50" borderRadius="md" borderLeft="4px solid" borderColor="red.500" mb={4}>
+                      <Flex alignItems="center">
+                        <Box color="red.500" fontSize="xl" mr={2}>⚠️</Box>
+                        <Text fontWeight="bold" color="red.700">Process Failed</Text>
+                      </Flex>
+                      <Text mt={2} color="red.600">
+                        {progressUpdates.length > 0 && progressUpdates[progressUpdates.length - 1].stage === 'error'
+                          ? progressUpdates[progressUpdates.length - 1].message 
+                          : 'An error occurred during the outreach process'}
+                      </Text>
+                    </Box>
+                  ) : currentStage === 'stopped' ? (
+                    <Box p={4} bg="yellow.50" borderRadius="md" borderLeft="4px solid" borderColor="yellow.500" mb={4}>
+                      <Flex alignItems="center">
+                        <Box color="yellow.500" fontSize="xl" mr={2}>⏹️</Box>
+                        <Text fontWeight="bold" color="yellow.700">Process Stopped</Text>
+                      </Flex>
+                      <Text mt={2} color="yellow.600">
+                        The outreach process was manually stopped
+                      </Text>
+                    </Box>
+                  ) : currentStage === 'complete' ? (
+                    <Box p={4} bg="green.50" borderRadius="md" borderLeft="4px solid" borderColor="green.500" mb={4}>
+                      <Flex alignItems="center">
+                        <Box color="green.500" fontSize="xl" mr={2}>✅</Box>
+                        <Text fontWeight="bold" color="green.700">Process Completed Successfully</Text>
+                      </Flex>
+                      <Text mt={2} color="green.600">
+                        {progressUpdates.length > 0 && progressUpdates[progressUpdates.length - 1].stage === 'complete'
+                          ? progressUpdates[progressUpdates.length - 1].message
+                          : 'Outreach process completed successfully'}
+                      </Text>
+                      
+                      {/* Get influencer stats from progress updates */}
+                      {progressUpdates.length > 0 && progressUpdates.some(update => update.stage === 'complete' && update.data?.influencer_count) && (
+                        <Box mt={3} pt={3} borderTop="1px solid" borderColor="green.200">
+                          <Text fontSize="sm" fontWeight="bold" color="green.700">Summary:</Text>
+                          <Text fontSize="sm" color="green.600" mt={1}>
+                            Found {progressUpdates.find(update => update.stage === 'complete')?.data?.influencer_count || 0} influencers in total
+                          </Text>
+                          
+                          <Button 
+                            mt={3}
+                            size="sm"
+                            colorScheme="green"
+                            leftIcon={<span role="img" aria-label="refresh">🔄</span>}
+                            onClick={() => fetchInfluencersWithLoading()}
+                          >
+                            Refresh Influencer List
+                          </Button>
+                        </Box>
+                      )}
+                    </Box>
+                  ) : (
+                    <>
+                      <Progress 
+                        value={getProgressPercentage()} 
+                        size="lg" 
+                        colorScheme={currentStage ? getStageColor(currentStage) : 'gray'}
+                        borderRadius="md"
+                        hasStripe
+                        isAnimated
+                        mb={2}
+                      />
+                      
+                      <Flex justifyContent="space-between" fontSize="sm" color="gray.600">
+                        <Text>Search Hashtags</Text>
+                        <Text>Get Profiles</Text>
+                        <Text>Extract Emails</Text>
+                        <Text>Process Users</Text>
+                      </Flex>
+                    </>
+                  )}
                   
                   {currentStage && (
                     <Badge colorScheme={getStageColor(currentStage)} mt={4} p={2} borderRadius="md">
@@ -1216,14 +1506,45 @@ export default function Home() {
                   </AccordionItem>
                 </Accordion>
                 
-                <Button
-                  colorScheme="red"
-                  variant="outline"
-                  width="100%"
-                  onClick={stopOutreach}
-                >
-                  Stop Process
-                </Button>
+                {currentStage === 'error' || currentStage === 'complete' || currentStage === 'stopped' ? (
+                  <Button
+                    colorScheme={currentStage === 'complete' ? "green" : "blue"}
+                    width="100%"
+                    leftIcon={currentStage === 'complete' ? <span role="img" aria-label="checkmark">✓</span> : undefined}
+                    onClick={() => {
+                      // Reset states
+                      setOutreachLogs([]);
+                      setProgressUpdates([]);
+                      setCurrentStage(null);
+                      setIsRunningOutreach(false);
+                      setStoppedNotificationShown(false); // Reset notification state
+                      
+                      // Close the modal
+                      setIsOutreachModalOpen(false);
+                      
+                      // Show a toast when not completing successfully (already showed a success toast)
+                      if (currentStage !== 'complete') {
+                        toast({
+                          title: 'Ready',
+                          description: 'You can start a new outreach process when needed',
+                          status: 'info',
+                          duration: 3000,
+                        });
+                      }
+                    }}
+                  >
+                    {currentStage === 'complete' ? 'Done - View Influencers' : 'Close'}
+                  </Button>
+                ) : (
+                  <Button
+                    colorScheme="red"
+                    variant="outline"
+                    width="100%"
+                    onClick={stopOutreach}
+                  >
+                    Stop Process
+                  </Button>
+                )}
               </Box>
             )}
           </ModalBody>

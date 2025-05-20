@@ -149,16 +149,40 @@ class DatabaseHelper:
             conn.close()
     
     def save_influencer(self, username: str, is_influencer: bool, full_name: Optional[str] = None, 
-                       bio: Optional[str] = None, email: Optional[str] = None):
-        """Save an influencer to the database."""
+                       bio: Optional[str] = None, email: Optional[str] = None, 
+                       checked_influencer: bool = True):
+        """
+        Save an influencer to the database.
+        
+        Args:
+            username: Instagram username
+            is_influencer: Whether the user is an influencer
+            full_name: User's full name
+            bio: User's bio text
+            email: User's email address
+            checked_influencer: Whether the user has been checked for being an influencer
+                                (defaults to True since we're setting this when we check)
+        """
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Get current timestamp
+            now = conn.execute("SELECT datetime('now')").fetchone()[0]
+            
             cursor.execute('''
-                INSERT OR REPLACE INTO influencers (username, full_name, bio, email, is_influencer)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (username, full_name, bio, email, is_influencer))
+                INSERT OR REPLACE INTO influencers (
+                    username, full_name, bio, email, is_influencer, 
+                    checked_influencer, checked_influencer_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (username, full_name, bio, email, is_influencer, 
+                 checked_influencer, now if checked_influencer else None))
+            
             conn.commit()
+            
+            logger.info(f"Saved influencer {username}: is_influencer={is_influencer}, checked={checked_influencer}")
+            
         except Exception as e:
             logger.error(f"Error saving influencer {username}: {e}")
             conn.rollback()
@@ -252,7 +276,8 @@ class DatabaseHelper:
             
             cursor.execute(f'''
                 SELECT username, full_name, bio, email, is_influencer, 
-                       needs_email_extraction, profile_updated_at, email_extracted_at
+                       needs_email_extraction, profile_updated_at, email_extracted_at,
+                       checked_influencer, checked_influencer_at
                 FROM influencers
                 WHERE username IN ({placeholders})
             ''', usernames)
@@ -267,7 +292,9 @@ class DatabaseHelper:
                     'is_influencer': bool(row[4]),
                     'needs_email_extraction': bool(row[5]),
                     'profile_updated_at': row[6],
-                    'email_extracted_at': row[7]
+                    'email_extracted_at': row[7],
+                    'checked_influencer': bool(row[8]) if row[8] is not None else False,
+                    'checked_influencer_at': row[9]
                 }
             
             return profiles

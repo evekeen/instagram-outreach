@@ -361,9 +361,29 @@ async def main():
         # Calculate current progress based on completed usernames
         current_progress = 60 + (i * progress_per_username)
         
+        # Get user profile to check if we've already verified their influencer status
+        profile_data = user_profiles.get(username, {})
+        already_checked = profile_data.get('checked_influencer', False)
+        is_influencer = profile_data.get('is_influencer', False)
+        
         progress_update("browser", f"Processing {username} ({i+1}/{len(filtered_usernames)})", 
                        {"username": username, "current": i+1, "total": len(filtered_usernames), 
-                        "percent": current_progress})
+                        "percent": current_progress, "already_checked": already_checked})
+        
+        # Skip browser check if we've already verified this user before
+        if already_checked:
+            progress_update("browser_detail", 
+                          f"Skipping browser check for {username} - already checked (is_influencer: {is_influencer})", 
+                          {"username": username, "is_influencer": is_influencer, 
+                           "percent": current_progress + progress_per_username, "skipped": True})
+            
+            # Still increment the progress
+            progress_update("browser", f"Processed {username} - used cached result", 
+                           {"username": username, "is_influencer": is_influencer, 
+                            "percent": current_progress + progress_per_username})
+            continue
+        
+        # If not already checked, proceed with browser automation
         browser = Browser(
             config=BrowserConfig(
                 browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',         
@@ -386,7 +406,6 @@ async def main():
                 data = Influencer.model_validate_json(history.final_result())
                 
                 # Add bio, full name, and email to the influencer object
-                profile_data = user_profiles.get(username, {})
                 data.full_name = profile_data.get('full_name')
                 data.bio = profile_data.get('bio')
                 data.email = profile_data.get('email')
@@ -395,28 +414,45 @@ async def main():
                               {"username": username, "is_influencer": data.is_influencer, 
                                "percent": current_progress + (progress_per_username * 0.6)})
                 
-                # Save the influencer data to the database
+                # Save the influencer data to the database - mark as checked
                 db.save_influencer(
                     username=data.username,
                     is_influencer=data.is_influencer,
                     full_name=data.full_name,
                     bio=data.bio,
-                    email=data.email
+                    email=data.email,
+                    checked_influencer=True  # Mark this influencer as checked
                 )
-                progress_update("browser_detail", f"Saved {username} data to database", 
+                progress_update("browser_detail", f"Saved {username} data to database (marked as checked)", 
                               {"username": username, "percent": current_progress + (progress_per_username * 0.8)})
                 
                 await ctx.close()
         except Exception as e:
             progress_update("error", f"Error processing {username}: {e}", 
                           {"username": username, "error": str(e), "percent": current_progress + progress_per_username})
+            
+            # Still mark as checked even on error, but don't change is_influencer status
+            # Get existing is_influencer value or default to False
+            is_influencer_value = profile_data.get('is_influencer', False)
+            
+            db.save_influencer(
+                username=username,
+                is_influencer=is_influencer_value,  # Keep existing value
+                full_name=profile_data.get('full_name'),
+                bio=profile_data.get('bio'),
+                email=profile_data.get('email'),
+                checked_influencer=True  # Mark as checked despite the error
+            )
+            progress_update("browser_detail", 
+                          f"Marked {username} as checked despite error (kept is_influencer={is_influencer_value})", 
+                          {"username": username, "percent": current_progress + progress_per_username})
         finally:
             await browser.close()
 
-        # delay for 5 seconds
-        progress_update("browser_detail", f"Waiting 5 seconds before the next profile...", 
+        # delay for 3 seconds before next profile (only if we did browser check)
+        progress_update("browser_detail", f"Waiting 3 seconds before the next profile...", 
                       {"username": username, "percent": current_progress + progress_per_username})
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
     
     # Get all influencers from the database
     influencers = db.get_influencers()
@@ -425,24 +461,48 @@ async def main():
 
 # Check if the database needs migration before running
 def check_db_columns():
-    """Check if the database has the required columns and prompt for migration if needed."""
+    """Check if the database has the required columns and run migrations if needed."""
     try:
         # Try to import the necessary modules
         import sqlite3
+        import subprocess
         
         # Connect to the database
         conn = sqlite3.connect('influencers.db')
         cursor = conn.cursor()
         
-        # Check if the needs_email_extraction column exists
+        # Check if the columns exist
         cursor.execute("PRAGMA table_info(influencers)")
         columns = [col[1] for col in cursor.fetchall()]
         
+        missing_columns = []
+        migrations_to_run = []
+        
         if 'needs_email_extraction' not in columns:
-            progress_update("warning", "Your database is missing required columns for efficient email extraction. " +
-                           "Please run 'python migrate_add_columns.py' to update your database schema.", 
-                           {"missing_columns": ["needs_email_extraction"]})
-            return False
+            missing_columns.append('needs_email_extraction')
+            migrations_to_run.append('migrate_add_columns.py')
+            
+        if 'checked_influencer' not in columns:
+            missing_columns.append('checked_influencer')
+            migrations_to_run.append('migrate_add_influencer_check.py')
+            
+        if missing_columns:
+            progress_update("warning", f"Your database is missing required columns: {', '.join(missing_columns)}. " +
+                           "Running migrations to update the database schema.", 
+                           {"missing_columns": missing_columns})
+            
+            # Run each migration script that's needed
+            for migration in migrations_to_run:
+                if os.path.exists(migration):
+                    progress_update("migration", f"Running migration: {migration}...")
+                    result = subprocess.run(["python", migration], 
+                                           capture_output=True, text=True, check=False)
+                    if result.returncode == 0:
+                        progress_update("migration", f"Successfully ran migration: {migration}")
+                    else:
+                        progress_update("error", f"Error running migration {migration}: {result.stderr}")
+            
+            progress_update("migration", "Database migrations completed")
             
         return True
     except Exception as e:
