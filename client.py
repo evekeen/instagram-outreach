@@ -26,8 +26,13 @@ class ApifyHelper:
     
     async def scrape_hashtags(self, hashtags: List[str], results_limit: int) -> List[Dict[str, Any]]:
         """Scrape posts from Instagram hashtags."""
-        results_per_hashtag = max(1, results_limit // len(hashtags))
-        logger.info(f"Scraping {len(hashtags)} hashtags with {results_per_hashtag} results per hashtag")
+        # If we have a very large limit, we need to be careful not to overload the API
+        # Limit maximum results per hashtag to avoid timeouts or excessive costs
+        max_results_per_hashtag = 500
+        
+        # Calculate results per hashtag, with a safety maximum
+        results_per_hashtag = min(max_results_per_hashtag, max(1, results_limit // len(hashtags)))
+        logger.info(f"Scraping {len(hashtags)} hashtags with {results_per_hashtag} results per hashtag (requested total: {results_limit})")
 
         input_data = {
             "hashtags": hashtags,

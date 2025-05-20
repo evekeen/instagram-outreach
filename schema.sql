@@ -10,7 +10,10 @@ CREATE TABLE IF NOT EXISTS influencers (
     email_sent_at TIMESTAMP,
     email_subject TEXT,
     email_body TEXT,
-    email_generated_at TIMESTAMP
+    email_generated_at TIMESTAMP,
+    profile_updated_at TIMESTAMP,
+    needs_email_extraction BOOLEAN DEFAULT FALSE,
+    email_extracted_at TIMESTAMP
 ); 
 
 CREATE TABLE IF NOT EXISTS hashtag_cache (

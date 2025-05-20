@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Optional
 from dotenv import load_dotenv
 
 from client import ApifyHelper
@@ -18,30 +18,81 @@ class HashtagScraper:
         self.hashtags = os.getenv("HASHTAGS", "golf,golfswing").split(",")
         self.results_limit = int(os.getenv("RESULTS_LIMIT", "100"))
     
-    async def get_usernames_from_hashtags(self) -> Set[str]:
+    async def get_usernames_from_hashtags(self, max_retries: int = 3, initial_limit: Optional[int] = None) -> Set[str]:
         """
         Scrape hashtags and extract unique usernames of content creators.
+        
+        Args:
+            max_retries: Maximum number of retries with increased limits
+            initial_limit: Initial results limit (defaults to self.results_limit if None)
         """
-        # Check if we have cached usernames in the database
-        cached_usernames = self.db.get_usernames_from_cache(self.hashtags, self.results_limit)
-        if cached_usernames:
-            logger.info(f"Using {len(cached_usernames)} cached usernames from database")
-            return cached_usernames
+        current_limit = initial_limit or self.results_limit
+        original_limit = self.results_limit
+        retry_count = 0
+        all_usernames_in_db = False
         
-        posts = await self.apify.scrape_hashtags(self.hashtags, self.results_limit)
+        while retry_count < max_retries:
+            # Temporarily set the results limit
+            self.results_limit = current_limit
+            
+            # Check if we have cached usernames in the database
+            cached_usernames = self.db.get_usernames_from_cache(self.hashtags, self.results_limit)
+            if cached_usernames:
+                logger.info(f"Using {len(cached_usernames)} cached usernames from database (limit: {self.results_limit})")
+                
+                # Check if all usernames are already in the DB by checking profiles
+                existing_profiles = self.db.get_profiles_by_usernames(list(cached_usernames))
+                if len(existing_profiles) == len(cached_usernames) and retry_count < max_retries - 1:
+                    all_usernames_in_db = True
+                    logger.info(f"All {len(cached_usernames)} usernames already have profiles in DB")
+                    
+                    # Double the limit and try again
+                    current_limit *= 2
+                    logger.info(f"Increasing results limit to {current_limit} and retrying")
+                    retry_count += 1
+                    continue
+                
+                # Reset the results limit to the original value before returning
+                self.results_limit = original_limit
+                return cached_usernames
+            
+            logger.info(f"Fetching usernames with limit: {self.results_limit}")
+            posts = await self.apify.scrape_hashtags(self.hashtags, self.results_limit)
+            
+            # Extract unique usernames from posts
+            usernames = set()
+            for post in posts:
+                username = post.get("ownerUsername")
+                if username:
+                    usernames.add(username)
+            
+            logger.info(f"Found {len(usernames)} unique users from {len(posts)} posts")
+            
+            # Save usernames to database cache
+            self.db.save_usernames_to_cache(self.hashtags, self.results_limit, usernames)
+            
+            # Check if all usernames are already in the DB by checking profiles
+            if retry_count < max_retries - 1:
+                existing_profiles = self.db.get_profiles_by_usernames(list(usernames))
+                if len(existing_profiles) == len(usernames):
+                    all_usernames_in_db = True
+                    logger.info(f"All {len(usernames)} usernames already have profiles in DB")
+                    
+                    # Double the limit and try again
+                    current_limit *= 2
+                    logger.info(f"Increasing results limit to {current_limit} and retrying")
+                    retry_count += 1
+                    continue
+            
+            # Reset the results limit to the original value before returning
+            self.results_limit = original_limit
+            return usernames
+            
+        # If we've reached the maximum number of retries, return the last set of usernames
+        logger.info(f"Reached maximum retries ({max_retries}) with limit {current_limit}")
         
-        # Extract unique usernames from posts
-        usernames = set()
-        for post in posts:
-            username = post.get("ownerUsername")
-            if username:
-                usernames.add(username)
-        
-        logger.info(f"Found {len(usernames)} unique users from {len(posts)} posts")
-        
-        # Save usernames to database cache
-        self.db.save_usernames_to_cache(self.hashtags, self.results_limit, usernames)
-        
+        # Reset the results limit to the original value before returning
+        self.results_limit = original_limit
         return usernames
     
     def extract_hashtags_from_caption(self, caption: str) -> List[str]:

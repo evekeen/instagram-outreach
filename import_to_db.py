@@ -58,6 +58,56 @@ def list_influencers(only_with_email=False):
     with_email = sum(1 for inf in influencers if inf.get('email'))
     print(f"\nSummary: {len(influencers)} total, {with_email} with email, {len(influencers) - with_email} without email")
 
+def clear_cache(days_old=30, keep_all_for_hashtags=None):
+    """Clear old cache entries to maintain database performance."""
+    db = DatabaseHelper()
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Get stats before clearing
+        stats_before = db.get_cache_statistics()
+        print(f"Cache before clearing: {stats_before['total_entries']} total entries across {stats_before['unique_combos']} combinations")
+        
+        # Create a WHERE clause that excludes the hashtags we want to keep
+        where_clause = f"datetime(created_at) < datetime('now', '-{days_old} days')"
+        params = []
+        
+        if keep_all_for_hashtags:
+            placeholders = ','.join(['?' for _ in keep_all_for_hashtags])
+            where_clause += f" AND hashtags NOT IN ({placeholders})"
+            params.extend(keep_all_for_hashtags)
+        
+        # Delete old cache entries
+        cursor.execute(f"DELETE FROM hashtag_cache WHERE {where_clause}", params)
+        deleted_count = cursor.rowcount
+        conn.commit()
+        
+        # Get stats after clearing
+        stats_after = db.get_cache_statistics()
+        
+        print(f"Deleted {deleted_count} cache entries older than {days_old} days")
+        print(f"Cache after clearing: {stats_after['total_entries']} total entries across {stats_after['unique_combos']} combinations")
+        
+    except Exception as e:
+        print(f"Error clearing cache: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+def show_cache_stats():
+    """Show statistics about the hashtag cache."""
+    db = DatabaseHelper()
+    stats = db.get_cache_statistics()
+    
+    print(f"Cache Statistics:")
+    print(f"- Total entries: {stats['total_entries']}")
+    print(f"- Unique hashtag+limit combinations: {stats['unique_combos']}")
+    print("\nTop combinations by entry count:")
+    
+    for i, combo in enumerate(stats['combos'][:10], 1):
+        print(f"{i}. Hashtags: {combo['hashtags']}, Limit: {combo['results_limit']}, Count: {combo['count']}")
+
 def main():
     parser = argparse.ArgumentParser(description="Database utility for influencer management")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -78,6 +128,14 @@ def main():
     list_parser = subparsers.add_parser("list", help="List influencers in database")
     list_parser.add_argument("--email-only", action="store_true", help="List only influencers with email")
     
+    # Cache stats command
+    cache_stats_parser = subparsers.add_parser("cache-stats", help="Show cache statistics")
+    
+    # Clear cache command
+    clear_cache_parser = subparsers.add_parser("clear-cache", help="Clear old cache entries")
+    clear_cache_parser.add_argument("--days", type=int, default=30, help="Clear entries older than this many days")
+    clear_cache_parser.add_argument("--keep-hashtags", nargs="*", help="Hashtags to keep all entries for")
+    
     args = parser.parse_args()
     
     if args.command == "init":
@@ -88,6 +146,10 @@ def main():
         export_to_json(args.file, args.email_only)
     elif args.command == "list":
         list_influencers(args.email_only)
+    elif args.command == "cache-stats":
+        show_cache_stats()
+    elif args.command == "clear-cache":
+        clear_cache(args.days, args.keep_hashtags)
     else:
         parser.print_help()
 

@@ -130,15 +130,23 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
     usernames_to_process = []
     
     for username, profile in existing_profiles.items():
-        if profile.get('email'):
-            # If we already have an email, use it
+        # Check if profile needs email extraction - handle None values for safety
+        needs_extraction = profile.get('needs_email_extraction')
+        if needs_extraction is None:
+            needs_extraction = True  # Default to processing if field is missing
+            
+        if profile.get('email') and not needs_extraction:
+            # If we already have an email and don't need re-extraction, use it
             email_mapping[username] = profile.get('email')
             print(f"Using existing email for {username}: {profile.get('email')}")
         elif username in profiles and profiles[username].get('bio'):
-            # If no email but has bio, add to processing list
+            # Add to processing list if:
+            # - It needs email extraction (bio changed or new profile)
+            # - Or it doesn't have an email yet
+            # - And it has a bio to extract from
             usernames_to_process.append(username)
     
-    print(f"Found {len(email_mapping)} existing emails in database")
+    print(f"Found {len(email_mapping)} existing emails in database that don't need re-extraction")
     print(f"Need to process {len(usernames_to_process)} bios for email extraction")
     
     if not usernames_to_process:
@@ -186,21 +194,31 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
         content = response.choices[0].message.content
         mapping = EmailMapping.model_validate_json(content)
         
-        # Add new emails to the mapping
+        # Process the results
         new_emails = {}
+        processed_usernames = set()
+        
         for item in mapping.profiles:
             username = item.username
             email = item.email
+            processed_usernames.add(username)
+            
             if username and email:
                 email_mapping[username] = email
                 new_emails[username] = email
         
-        print(f"Found {len(new_emails)} new emails from {len(bio_data)} bios")
+        # Add all processed usernames (even those without emails) to mark them as processed
+        no_email_usernames = processed_usernames - set(new_emails.keys())
+        for username in no_email_usernames:
+            new_emails[username] = None
         
-        # Save only new emails to database
+        email_count = len([e for e in new_emails.values() if e])
+        print(f"Found {email_count} new emails from {len(bio_data)} bios")
+        
+        # Save results to database and reset flags
         if new_emails:
-            db.update_emails(new_emails)
-            print(f"Saved {len(new_emails)} new emails to database")
+            updated = db.update_emails(new_emails)
+            print(f"Saved {updated} new emails to database, marked {len(new_emails)} profiles as processed")
         
         return email_mapping
     
@@ -210,19 +228,56 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
 
 async def main():
     db = DatabaseHelper()
+    max_retry_attempts = 3
+    current_attempt = 0
+    initial_limit = None
     
-    # Get usernames from hashtags
-    scraper = HashtagScraper()
-    usernames = await scraper.get_usernames_from_hashtags()
-    usernames = list(usernames)[:10]  # Limit to 10 usernames for testing, remove this limitation for production
-    print(f'Found {len(usernames)} usernames: {usernames}')
-    
-    # Get user profiles
-    user_profiles = await get_user_profiles(usernames)
-    
-    # Extract emails
-    emails = await extract_emails_from_bios(user_profiles)
-    print(f'emails: {emails}')
+    while current_attempt < max_retry_attempts:
+        # Get usernames from hashtags
+        # If all usernames are already in the DB, the scraper will automatically increase the results limit and retry
+        scraper = HashtagScraper()
+        usernames = await scraper.get_usernames_from_hashtags(max_retries=3, initial_limit=initial_limit)
+        usernames = list(usernames)
+        
+        # For testing - limit the number of usernames
+        original_count = len(usernames)
+        test_mode = False
+        if test_mode and original_count > 10:
+            print(f"Testing mode: Limiting to 10 usernames out of {original_count}")
+            usernames = usernames[:10]
+        print(f'Found {len(usernames)} usernames: {usernames}')
+        
+        # Get user profiles
+        user_profiles = await get_user_profiles(usernames)
+        
+        # Extract emails
+        emails = await extract_emails_from_bios(user_profiles)
+        email_count = len([e for e in emails.values() if e])
+        print(f'Found {email_count} emails out of {len(usernames)} usernames')
+        
+        # Filter usernames to only process those with emails
+        filtered_usernames = [username for username in usernames if emails.get(username)]
+        print(f'Found {len(filtered_usernames)} usernames with email')
+        
+        # If no emails were found or no usernames with emails were found,
+        # and we haven't reached the maximum number of retries, increase the result limit and try again
+        if (email_count == 0 or len(filtered_usernames) == 0) and current_attempt < max_retry_attempts - 1:
+            current_attempt += 1
+            
+            # Determine the new limit - either double or add 50, whichever is lower
+            current_limit = initial_limit or scraper.results_limit
+            increase_by_double = current_limit * 2
+            increase_by_50 = current_limit + 50
+            
+            # Use the smaller increase
+            initial_limit = min(increase_by_double, increase_by_50)
+            
+            print(f"No emails found. Attempt {current_attempt}/{max_retry_attempts}: " 
+                  f"Increasing result limit to {initial_limit} and trying again.")
+            continue
+        
+        # If we found emails or reached the maximum number of retries, break the loop
+        break
     
     # Update the user_profiles dictionary with emails
     for username, email in emails.items():
@@ -232,8 +287,7 @@ async def main():
     # Set up the controller for the browser automation
     ctrl = Controller(output_model=Influencer)
     
-    # Filter usernames to only process those with emails
-    filtered_usernames = [username for username in usernames if user_profiles.get(username, {}).get('email')]
+    # We already calculated filtered_usernames above
     print(f'Processing {len(filtered_usernames)} usernames with emails: {filtered_usernames}')
     
     # Process each username
@@ -286,5 +340,39 @@ async def main():
     influencers = db.get_influencers()
     print(f"Found {len(influencers)} influencers in the database")
 
+# Check if the database needs migration before running
+def check_db_columns():
+    """Check if the database has the required columns and prompt for migration if needed."""
+    try:
+        # Try to import the necessary modules
+        import sqlite3
+        
+        # Connect to the database
+        conn = sqlite3.connect('influencers.db')
+        cursor = conn.cursor()
+        
+        # Check if the needs_email_extraction column exists
+        cursor.execute("PRAGMA table_info(influencers)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'needs_email_extraction' not in columns:
+            print("=" * 80)
+            print("WARNING: Your database is missing required columns for efficient email extraction.")
+            print("Please run 'python migrate_add_columns.py' to update your database schema.")
+            print("=" * 80)
+            return False
+            
+        return True
+    except Exception as e:
+        print(f"Error checking database columns: {e}")
+        return False
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
 if __name__ == '__main__':
+    # Check if the database needs migration
+    check_db_columns()
+    
+    # Run the main function
     asyncio.run(main())

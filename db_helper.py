@@ -68,6 +68,7 @@ class DatabaseHelper:
                     hashtags TEXT,
                     results_limit INTEGER,
                     username TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(hashtags, results_limit, username)
                 )
             ''')
@@ -75,23 +76,75 @@ class DatabaseHelper:
             # Convert hashtags to a consistent string format for caching
             hashtags_str = ','.join(sorted(hashtags))
             
+            # Begin transaction
+            conn.execute('BEGIN TRANSACTION')
+            
             # Clear existing entries for these hashtags and limit
             cursor.execute('''
                 DELETE FROM hashtag_cache 
                 WHERE hashtags = ? AND results_limit = ?
             ''', (hashtags_str, results_limit))
             
-            # Insert new entries
-            for username in usernames:
-                cursor.execute('''
-                    INSERT INTO hashtag_cache (hashtags, results_limit, username)
-                    VALUES (?, ?, ?)
-                ''', (hashtags_str, results_limit, username))
+            # Insert new entries - use executemany for better performance with large sets
+            entries = [(hashtags_str, results_limit, username) for username in usernames]
+            cursor.executemany('''
+                INSERT INTO hashtag_cache (hashtags, results_limit, username)
+                VALUES (?, ?, ?)
+            ''', entries)
             
+            # Commit the transaction
             conn.commit()
+            logger.info(f"Saved {len(usernames)} usernames to cache with limit {results_limit}")
+            
         except Exception as e:
             logger.error(f"Error saving usernames to cache: {e}")
             conn.rollback()
+        finally:
+            conn.close()
+            
+    def get_cache_statistics(self):
+        """Get statistics about the hashtag cache."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Get count of unique hashtag+limit combinations
+            cursor.execute('SELECT COUNT(DISTINCT hashtags || results_limit) FROM hashtag_cache')
+            unique_combos = cursor.fetchone()[0]
+            
+            # Get total count of cache entries
+            cursor.execute('SELECT COUNT(*) FROM hashtag_cache')
+            total_entries = cursor.fetchone()[0]
+            
+            # Get counts per hashtag+limit combination
+            cursor.execute('''
+                SELECT hashtags, results_limit, COUNT(*) as count
+                FROM hashtag_cache
+                GROUP BY hashtags, results_limit
+                ORDER BY count DESC
+            ''')
+            
+            combos = []
+            for row in cursor.fetchall():
+                combos.append({
+                    'hashtags': row[0],
+                    'results_limit': row[1],
+                    'count': row[2]
+                })
+            
+            return {
+                'unique_combos': unique_combos,
+                'total_entries': total_entries,
+                'combos': combos
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting cache statistics: {e}")
+            return {
+                'unique_combos': 0,
+                'total_entries': 0,
+                'combos': []
+            }
         finally:
             conn.close()
     
@@ -198,7 +251,8 @@ class DatabaseHelper:
             placeholders = ','.join(['?' for _ in usernames])
             
             cursor.execute(f'''
-                SELECT username, full_name, bio, email, is_influencer 
+                SELECT username, full_name, bio, email, is_influencer, 
+                       needs_email_extraction, profile_updated_at, email_extracted_at
                 FROM influencers
                 WHERE username IN ({placeholders})
             ''', usernames)
@@ -210,7 +264,10 @@ class DatabaseHelper:
                     'full_name': row[1],
                     'bio': row[2],
                     'email': row[3],
-                    'is_influencer': bool(row[4])
+                    'is_influencer': bool(row[4]),
+                    'needs_email_extraction': bool(row[5]),
+                    'profile_updated_at': row[6],
+                    'email_extracted_at': row[7]
                 }
             
             return profiles
@@ -242,30 +299,70 @@ class DatabaseHelper:
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Get current timestamp
+            now = conn.execute("SELECT datetime('now')").fetchone()[0]
+            
+            # Track which profiles were updated for return value
+            updated_profiles = []
+            
             for username, data in profiles.items():
-                # First check if the user exists
+                # First check if the user exists and if bio has changed
                 cursor.execute('''
-                    SELECT 1 FROM influencers WHERE username = ?
+                    SELECT bio FROM influencers WHERE username = ?
                 ''', (username,))
                 
-                if cursor.fetchone():
+                result = cursor.fetchone()
+                if result:
+                    # User exists, check if bio changed
+                    current_bio = result[0]
+                    new_bio = data.get('bio')
+                    
+                    # Only mark for email re-extraction if bio changed
+                    bio_changed = current_bio != new_bio and new_bio is not None
+                    
                     # Update existing user
                     cursor.execute('''
                         UPDATE influencers 
-                        SET full_name = ?, bio = ?
+                        SET full_name = ?, 
+                            bio = ?,
+                            profile_updated_at = ?,
+                            needs_email_extraction = ?
                         WHERE username = ?
-                    ''', (data.get('full_name'), data.get('bio'), username))
+                    ''', (
+                        data.get('full_name'), 
+                        new_bio, 
+                        now if bio_changed else None,
+                        1 if bio_changed else 0,
+                        username
+                    ))
+                    
+                    if bio_changed:
+                        updated_profiles.append(username)
                 else:
                     # Insert new user
                     cursor.execute('''
-                        INSERT INTO influencers (username, full_name, bio, is_influencer)
-                        VALUES (?, ?, ?, 0)
-                    ''', (username, data.get('full_name'), data.get('bio')))
+                        INSERT INTO influencers (
+                            username, full_name, bio, is_influencer, 
+                            profile_updated_at, needs_email_extraction
+                        )
+                        VALUES (?, ?, ?, 0, ?, 1)
+                    ''', (
+                        username, 
+                        data.get('full_name'), 
+                        data.get('bio'),
+                        now
+                    ))
+                    
+                    updated_profiles.append(username)
             
             conn.commit()
+            logger.info(f"Updated {len(profiles)} profiles, {len(updated_profiles)} with changed bios")
+            return updated_profiles
         except Exception as e:
             logger.error(f"Error updating user profiles: {e}")
             conn.rollback()
+            return []
         finally:
             conn.close()
     
@@ -274,17 +371,38 @@ class DatabaseHelper:
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
+            
+            # Get current timestamp
+            now = conn.execute("SELECT datetime('now')").fetchone()[0]
+            
+            # Track updates for return value
+            updated_count = 0
+            
             for username, email in email_mapping.items():
                 if email:  # Only update if email is not None
                     cursor.execute('''
                         UPDATE influencers 
-                        SET email = ?
+                        SET email = ?,
+                            needs_email_extraction = 0,
+                            email_extracted_at = ?
                         WHERE username = ?
-                    ''', (email, username))
+                    ''', (email, now, username))
+                    
+                    updated_count += 1
+                else:
+                    # If we couldn't find an email, still mark as processed
+                    cursor.execute('''
+                        UPDATE influencers 
+                        SET needs_email_extraction = 0
+                        WHERE username = ?
+                    ''', (username,))
             
             conn.commit()
+            logger.info(f"Updated {updated_count} emails in database")
+            return updated_count
         except Exception as e:
             logger.error(f"Error updating emails: {e}")
             conn.rollback()
+            return 0
         finally:
             conn.close()
