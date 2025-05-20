@@ -30,7 +30,7 @@ class Influencer(BaseModel):
     is_influencer: bool
 
 async def main():
-    usernames = ['piff_golfs', 'selenasamuela']
+    usernames = await get_usernames() # ['piff_golfs', 'selenasamuela']
     print(f'Found {len(usernames)} usernames: {usernames}')
     
     ctrl = Controller(output_model=Influencer)
