@@ -44,6 +44,14 @@ export async function POST(request: NextRequest) {
     console.log('Generating email for:', influencer);
     
     const prompt = `Write a professional email to ${influencer.full_name || influencer.username} about joining our affiliate program for Ace Trace app. 
+    Details about the offer:
+      - they promote the app on their social media
+      - they have a personal promo code for the app
+      - the  get the app for free
+      - they get 15% of the revenue from the app via the promo code      
+      - users get 10% of the app via the promo code
+      - we wire them money monthly and provide the promo code reports
+      
     The person is an Instagram influencer with the following bio: ${influencer.bio || 'No bio available'}
     
     The email should:
