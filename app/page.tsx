@@ -16,6 +16,7 @@ export default function Home() {
   const [emailDraft, setEmailDraft] = useState<EmailDraft>({ subject: '', body: '' });
   const [isSending, setIsSending] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [isRegenerating, setIsRegenerating] = useState<boolean>(false);
   const toast = useToast();
 
   const fetchInfluencers = async (): Promise<void> => {
@@ -35,11 +36,26 @@ export default function Home() {
   
   // This useEffect is replaced by the one using fetchInfluencersWithLoading
 
-  const generateEmailDraft = async (influencer: Influencer): Promise<void> => {
+  const generateEmailDraft = async (influencer: Influencer, forceRegenerate: boolean = false): Promise<void> => {
     try {
-      setIsGenerating(true);
       setSelectedInfluencer(influencer);
       setIsModalOpen(true);
+      
+      // Check if we already have a stored draft and are not forcing regeneration
+      if (!forceRegenerate && influencer.email_subject && influencer.email_body) {
+        console.log('Using existing email draft from database');
+        setEmailDraft({
+          subject: influencer.email_subject,
+          body: influencer.email_body
+        });
+        return;
+      }
+      
+      // No stored draft or regeneration requested, generate a new one
+      setIsGenerating(true);
+      if (forceRegenerate) {
+        setIsRegenerating(true);
+      }
       
       const response = await fetch('/api/generate-email', {
         method: 'POST',
@@ -55,9 +71,12 @@ export default function Home() {
         status: 'error',
         duration: 3000,
       });
-      setIsModalOpen(false);
+      if (!influencer.email_subject && !influencer.email_body) {
+        setIsModalOpen(false);
+      }
     } finally {
       setIsGenerating(false);
+      setIsRegenerating(false);
     }
   };
 
@@ -75,6 +94,22 @@ export default function Home() {
     try {
       setIsSending(true);
       
+      // First save any changes to the draft
+      const saveResponse = await fetch('/api/save-email-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: selectedInfluencer.username,
+          subject: emailDraft.subject,
+          body: emailDraft.body
+        }),
+      });
+      
+      if (!saveResponse.ok) {
+        console.warn('Failed to save email draft before sending');
+      }
+      
+      // Then send the email
       const response = await fetch('/api/send-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -98,6 +133,17 @@ export default function Home() {
         status: 'success',
         duration: 3000,
       });
+      
+      // Update the local state to reflect the sent status
+      if (selectedInfluencer) {
+        setInfluencers(prevInfluencers => 
+          prevInfluencers.map(inf => 
+            inf.username === selectedInfluencer.username 
+              ? {...inf, email_sent: true, email_sent_at: new Date().toISOString()}
+              : inf
+          )
+        );
+      }
       
       // Close the modal after sending
       setIsModalOpen(false);
@@ -188,6 +234,7 @@ export default function Home() {
                   <Th>Username</Th>
                   <Th>Full Name</Th>
                   <Th>Email</Th>
+                  <Th>Status</Th>
                   <Th>Actions</Th>
                 </Tr>
               </Thead>
@@ -198,6 +245,21 @@ export default function Home() {
                     <Td>{influencer.full_name}</Td>
                     <Td>{influencer.email}</Td>
                     <Td>
+                      {influencer.email_sent ? (
+                        <Text color="green.500" fontWeight="bold">
+                          ✓ Sent
+                        </Text>
+                      ) : influencer.email_subject && influencer.email_body ? (
+                        <Text color="blue.500">
+                          Draft ready
+                        </Text>
+                      ) : (
+                        <Text color="gray.500">
+                          Not started
+                        </Text>
+                      )}
+                    </Td>
+                    <Td>
                       <Button
                         colorScheme={isGenerating && selectedInfluencer?.username === influencer.username ? "purple" : "blue"}
                         size="sm"
@@ -207,8 +269,13 @@ export default function Home() {
                         bgGradient={isGenerating && selectedInfluencer?.username === influencer.username ? 
                           "linear(to-r, purple.500, blue.500)" : ""}
                       >
-                        {isGenerating && selectedInfluencer?.username === influencer.username ? 
-                          "AI Generating" : "Generate Email"}
+                        {isGenerating && selectedInfluencer?.username === influencer.username 
+                          ? "AI Generating" 
+                          : influencer.email_sent 
+                            ? "Edit Email" 
+                            : influencer.email_subject && influencer.email_body 
+                              ? "View/Edit Draft" 
+                              : "Generate Email"}
                       </Button>
                     </Td>
                   </Tr>
@@ -240,20 +307,27 @@ export default function Home() {
             right="0" 
             height="4px" 
             bgGradient="linear(to-r, blue.400, purple.500)" 
-            display={isGenerating ? "block" : "none"}
+            display={(isGenerating || isRegenerating) ? "block" : "none"}
           />
           <ModalHeader>
-            {isGenerating ? (
+            {isGenerating || isRegenerating ? (
               <Text bgGradient="linear(to-r, cyan.400, purple.500)" bgClip="text">
                 AI Generating Email for {selectedInfluencer?.username}
               </Text>
+            ) : selectedInfluencer?.email_sent ? (
+              <>
+                Editing Email for {selectedInfluencer?.username}
+                <Text as="span" color="green.500" ml={2} fontSize="sm">
+                  (Previously Sent)
+                </Text>
+              </>
             ) : (
               <>Email Draft for {selectedInfluencer?.username}</>
             )}
           </ModalHeader>
           <ModalCloseButton color={isGenerating ? "white" : "inherit"} />
           <ModalBody pb={6}>
-            {isGenerating ? (
+            {isGenerating || isRegenerating ? (
               <Box py={10} textAlign="center">
                 <Box 
                   mb={6}
@@ -413,27 +487,160 @@ export default function Home() {
               </Box>
             ) : (
               <>
-                <Text fontWeight="bold" mb={2}>Subject:</Text>
-                <Text mb={4}>{emailDraft.subject}</Text>
-                <Text fontWeight="bold" mb={2}>Body:</Text>
-                <Text whiteSpace="pre-wrap" mb={6}>{emailDraft.body}</Text>
+                <Box mb={4}>
+                  <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                    <Text fontWeight="bold">Subject:</Text>
+                  </Box>
+                  <input
+                    value={emailDraft.subject}
+                    onChange={(e) => setEmailDraft({...emailDraft, subject: e.target.value})}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '0.375rem',
+                      fontSize: '1rem',
+                      lineHeight: '1.5'
+                    }}
+                  />
+                </Box>
                 
-                <Box display="flex" justifyContent="space-between" mt={4}>
-                  <Button 
-                    colorScheme="blue" 
-                    onClick={sendEmail} 
-                    isLoading={isSending}
-                    isDisabled={!selectedInfluencer?.email}
-                    leftIcon={<span role="img" aria-label="send">📤</span>}
-                  >
-                    Send Email
-                  </Button>
+                <Box mb={4}>
+                  <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                    <Text fontWeight="bold">Body:</Text>
+                    <Button
+                      size="xs"
+                      colorScheme="purple"
+                      leftIcon={<span role="img" aria-label="regenerate">🔄</span>}
+                      onClick={() => selectedInfluencer && generateEmailDraft(selectedInfluencer, true)}
+                      isLoading={isRegenerating}
+                      loadingText="Regenerating"
+                    >
+                      Regenerate with AI
+                    </Button>
+                  </Box>
+                  <textarea
+                    value={emailDraft.body}
+                    onChange={(e) => setEmailDraft({...emailDraft, body: e.target.value})}
+                    rows={10}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '0.375rem',
+                      fontSize: '1rem',
+                      lineHeight: '1.5',
+                      fontFamily: 'inherit'
+                    }}
+                  />
                   
-                  {!selectedInfluencer?.email && (
-                    <Text color="red.500" fontSize="sm">
-                      No email address available for this influencer
+                  {selectedInfluencer?.email_generated_at && !isRegenerating && (
+                    <Text fontSize="xs" color="gray.500" mt={1} textAlign="right">
+                      Generated {new Date(selectedInfluencer.email_generated_at).toLocaleString()}
                     </Text>
                   )}
+                </Box>
+                
+                <Box display="flex" justifyContent="space-between" alignItems="center" mt={4}>
+                  <Box display="flex" gap={2}>
+                    <Button 
+                      colorScheme={selectedInfluencer?.email_sent ? "green" : "blue"}
+                      onClick={sendEmail} 
+                      isLoading={isSending}
+                      isDisabled={!selectedInfluencer?.email}
+                      leftIcon={<span role="img" aria-label="send">{selectedInfluencer?.email_sent ? '🔄' : '📤'}</span>}
+                    >
+                      {selectedInfluencer?.email_sent ? 'Resend Email' : 'Send Email'}
+                    </Button>
+                    
+                    <Button
+                      colorScheme="gray"
+                      variant="outline"
+                      onClick={async () => {
+                        if (selectedInfluencer) {
+                          try {
+                            const response = await fetch('/api/save-email-draft', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                username: selectedInfluencer.username,
+                                subject: emailDraft.subject,
+                                body: emailDraft.body
+                              }),
+                            });
+                            
+                            if (response.ok) {
+                              toast({
+                                title: 'Draft Saved',
+                                description: 'Your email draft has been saved',
+                                status: 'success',
+                                duration: 2000,
+                              });
+                              
+                              // Update the local state
+                              const now = new Date().toISOString();
+                              
+                              // Update selected influencer
+                              setSelectedInfluencer({
+                                ...selectedInfluencer,
+                                email_subject: emailDraft.subject,
+                                email_body: emailDraft.body,
+                                email_generated_at: now
+                              });
+                              
+                              // Update the influencer in the table list
+                              setInfluencers(prevInfluencers => 
+                                prevInfluencers.map(inf => 
+                                  inf.username === selectedInfluencer.username 
+                                    ? {
+                                        ...inf, 
+                                        email_subject: emailDraft.subject,
+                                        email_body: emailDraft.body,
+                                        email_generated_at: now
+                                      }
+                                    : inf
+                                )
+                              );
+                            } else {
+                              throw new Error('Failed to save draft');
+                            }
+                          } catch (error) {
+                            toast({
+                              title: 'Error',
+                              description: 'Failed to save draft',
+                              status: 'error',
+                              duration: 3000,
+                            });
+                          }
+                        }
+                      }}
+                      leftIcon={<span role="img" aria-label="save">💾</span>}
+                    >
+                      Save Draft
+                    </Button>
+                  </Box>
+                  
+                  <Box>
+                    {!selectedInfluencer?.email && (
+                      <Text color="red.500" fontSize="sm">
+                        No email address available for this influencer
+                      </Text>
+                    )}
+                    
+                    {selectedInfluencer?.email_sent && (
+                      <Box p={2} bg="green.50" borderRadius="md" borderLeft="3px solid" borderColor="green.500">
+                        <Text color="green.600" fontWeight="medium" fontSize="sm">
+                          Email was sent on {selectedInfluencer.email_sent_at ? 
+                            new Date(selectedInfluencer.email_sent_at as string).toLocaleString() : 
+                            'unknown date'
+                          }
+                        </Text>
+                        <Text color="green.500" fontSize="xs" mt={1}>
+                          You can edit and resend the email if needed
+                        </Text>
+                      </Box>
+                    )}
+                  </Box>
                 </Box>
               </>
             )}

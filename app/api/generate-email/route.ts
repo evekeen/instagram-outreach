@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { NextRequest, NextResponse } from 'next/server';
-import { Influencer } from '../../lib/db';
+import { Influencer, saveEmailDraft } from '../../lib/db';
 import { z } from 'zod';
 import { zodResponseFormat } from "openai/helpers/zod";
 
@@ -89,6 +89,13 @@ export async function POST(request: NextRequest) {
       try {
         const email = completion.choices[0].message.parsed;
         console.log('Email:', email);
+        
+        // Save the email draft to the database
+        if (influencer.username && email.subject && email.body) {
+          saveEmailDraft(influencer.username, email.subject, email.body);
+          console.log('Email draft saved to database for', influencer.username);
+        }
+        
         return NextResponse.json(email);
       } catch (parseError) {
         console.error('Error parsing OpenAI response:', parseError);

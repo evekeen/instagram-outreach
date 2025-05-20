@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import nodemailer from 'nodemailer';
-import { Influencer } from '../../lib/db';
+import { Influencer, updateEmailSentStatus } from '../../lib/db';
 
 // Load environment variables
 import 'dotenv/config';
@@ -50,8 +50,11 @@ export async function POST(request: NextRequest) {
     const info = await transporter.sendMail(mailOptions);
     console.log('Email sent:', info.messageId);
     
-    // Record the email sent in the database if needed
-    // Here you could add code to track that an email was sent to this influencer
+    // Record the email sent in the database
+    if (influencer && influencer.username) {
+      updateEmailSentStatus(influencer.username, true);
+      console.log(`Updated email_sent status for ${influencer.username}`);
+    }
     
     return NextResponse.json({ 
       success: true, 

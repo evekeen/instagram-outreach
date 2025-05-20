@@ -5,5 +5,10 @@ CREATE TABLE IF NOT EXISTS influencers (
     bio TEXT,
     email TEXT,
     is_influencer BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    email_sent BOOLEAN DEFAULT FALSE,
+    email_sent_at TIMESTAMP,
+    email_subject TEXT,
+    email_body TEXT,
+    email_generated_at TIMESTAMP
 ); 

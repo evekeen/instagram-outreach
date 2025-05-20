@@ -10,6 +10,11 @@ export interface Influencer {
   full_name?: string | null;
   bio?: string | null;
   email?: string | null;
+  email_sent?: boolean;
+  email_sent_at?: string | null;
+  email_subject?: string | null;
+  email_body?: string | null;
+  email_generated_at?: string | null;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,4 +29,35 @@ export function getAllInfluencers(): Influencer[] {
 
 export function getInfluencerByUsername(username: string): Influencer | undefined {
   return db.prepare('SELECT * FROM influencers WHERE username = ?').get(username) as Influencer | undefined;
+}
+
+export function updateEmailSentStatus(username: string, sent: boolean = true): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE influencers SET email_sent = ?, email_sent_at = ? WHERE username = ?'
+  ).run(sent ? 1 : 0, sent ? now : null, username);
+}
+
+export function saveEmailDraft(
+  username: string, 
+  subject: string, 
+  body: string
+): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE influencers SET email_subject = ?, email_body = ?, email_generated_at = ? WHERE username = ?'
+  ).run(subject, body, now, username);
+}
+
+export function getEmailDraft(username: string): { subject: string; body: string } | null {
+  const influencer = getInfluencerByUsername(username);
+  
+  if (influencer && influencer.email_subject && influencer.email_body) {
+    return {
+      subject: influencer.email_subject,
+      body: influencer.email_body
+    };
+  }
+  
+  return null;
 }
