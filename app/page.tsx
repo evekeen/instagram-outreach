@@ -589,22 +589,7 @@ export default function Home() {
             <Text fontSize="sm" fontWeight={showOnlyInfluencers ? "bold" : "medium"} color={showOnlyInfluencers ? "green.700" : "gray.700"}>
               Only Influencers
             </Text>
-          </Box>
-          
-          {/* Reset filters button - only shown when filters are modified from defaults */}
-          {(!showOnlyWithEmail || !showOnlyInfluencers) && (
-            <Button 
-              size="sm" 
-              variant="outline"
-              onClick={() => {
-                setShowOnlyWithEmail(true);
-                setShowOnlyInfluencers(true);
-              }}
-              leftIcon={<span role="img" aria-label="reset">🔄</span>}
-            >
-              Reset Filters
-            </Button>
-          )}
+          </Box>                   
           </Box>                    
         </Box>
       </Box>
