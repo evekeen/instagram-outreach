@@ -1,3 +1,5 @@
 .env
 __pycache__/
 username_cache.json
+influencers.json
+user_profiles.json
