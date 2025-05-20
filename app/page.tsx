@@ -17,8 +17,8 @@ export default function Home() {
   const [isSending, setIsSending] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRegenerating, setIsRegenerating] = useState<boolean>(false);
-  const [showOnlyWithEmail, setShowOnlyWithEmail] = useState<boolean>(false);
-  const [showOnlyInfluencers, setShowOnlyInfluencers] = useState<boolean>(false);
+  const [showOnlyWithEmail, setShowOnlyWithEmail] = useState<boolean>(true);
+  const [showOnlyInfluencers, setShowOnlyInfluencers] = useState<boolean>(true);
   const [filteredInfluencers, setFilteredInfluencers] = useState<Influencer[]>([]);
   const toast = useToast();
 
@@ -248,7 +248,8 @@ export default function Home() {
           )}
         </Box>
         
-        <Box display="flex" gap={4}>
+        <Box>
+          <Box display="flex" gap={4} alignItems="center" mb={1}>
           <Box 
             as="label" 
             display="flex" 
@@ -256,9 +257,10 @@ export default function Home() {
             cursor="pointer"
             padding="2"
             borderRadius="md"
-            bgColor={showOnlyWithEmail ? "blue.50" : "transparent"}
+            bgColor={showOnlyWithEmail ? "blue.100" : "transparent"}
             border="1px solid"
-            borderColor={showOnlyWithEmail ? "blue.200" : "gray.200"}
+            borderColor={showOnlyWithEmail ? "blue.300" : "gray.200"}
+            boxShadow={showOnlyWithEmail ? "0 0 0 1px blue.200" : "none"}
             transition="all 0.2s"
           >
             <input 
@@ -267,7 +269,9 @@ export default function Home() {
               onChange={() => setShowOnlyWithEmail(!showOnlyWithEmail)}
               style={{ marginRight: '8px' }}
             />
-            <Text fontSize="sm" fontWeight="medium">Only with Email</Text>
+            <Text fontSize="sm" fontWeight={showOnlyWithEmail ? "bold" : "medium"} color={showOnlyWithEmail ? "blue.700" : "gray.700"}>
+              Only with Email
+            </Text>
           </Box>
           
           <Box 
@@ -277,9 +281,10 @@ export default function Home() {
             cursor="pointer"
             padding="2"
             borderRadius="md"
-            bgColor={showOnlyInfluencers ? "green.50" : "transparent"}
+            bgColor={showOnlyInfluencers ? "green.100" : "transparent"}
             border="1px solid"
-            borderColor={showOnlyInfluencers ? "green.200" : "gray.200"}
+            borderColor={showOnlyInfluencers ? "green.300" : "gray.200"}
+            boxShadow={showOnlyInfluencers ? "0 0 0 1px green.200" : "none"}
             transition="all 0.2s"
           >
             <input 
@@ -288,8 +293,33 @@ export default function Home() {
               onChange={() => setShowOnlyInfluencers(!showOnlyInfluencers)}
               style={{ marginRight: '8px' }}
             />
-            <Text fontSize="sm" fontWeight="medium">Only Influencers</Text>
+            <Text fontSize="sm" fontWeight={showOnlyInfluencers ? "bold" : "medium"} color={showOnlyInfluencers ? "green.700" : "gray.700"}>
+              Only Influencers
+            </Text>
           </Box>
+          
+          {/* Reset filters button - only shown when filters are modified from defaults */}
+          {(!showOnlyWithEmail || !showOnlyInfluencers) && (
+            <Button 
+              size="sm" 
+              variant="outline"
+              onClick={() => {
+                setShowOnlyWithEmail(true);
+                setShowOnlyInfluencers(true);
+              }}
+              leftIcon={<span role="img" aria-label="reset">🔄</span>}
+            >
+              Reset Filters
+            </Button>
+          )}
+          </Box>
+          
+          {/* Explanation of filters */}
+          <Text fontSize="xs" color="gray.500" textAlign="right">
+            {showOnlyWithEmail && showOnlyInfluencers 
+              ? "Filters are on by default to show only the most relevant profiles" 
+              : "Showing additional profiles that may not be suitable for outreach"}
+          </Text>
         </Box>
       </Box>
       
@@ -303,8 +333,8 @@ export default function Home() {
             <Center py={10}>
               <Text fontSize="lg">
                 {influencers.length === 0 
-                  ? "No influencers found" 
-                  : "No influencers match the current filters"}
+                  ? "No influencers found in the database" 
+                  : `No influencers match the current filters. Try ${!showOnlyWithEmail ? 'including influencers without email' : ''}${!showOnlyWithEmail && !showOnlyInfluencers ? ' or ' : ''}${!showOnlyInfluencers ? 'including non-influencers' : ''}`}
               </Text>
             </Center>
           ) : (
