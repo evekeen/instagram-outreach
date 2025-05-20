@@ -262,17 +262,17 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
         return email_mapping
 
 async def main():
-    progress_update("start", "Starting outreach process...")
+    progress_update("start", "Starting outreach process...", {"percent": 5})
     db = DatabaseHelper()
     max_retry_attempts = 3
     current_attempt = 0
     initial_limit = None
     
     while current_attempt < max_retry_attempts:
-        # Get usernames from hashtags
+        # Get usernames from hashtags - 5-20% of progress
         # If all usernames are already in the DB, the scraper will automatically increase the results limit and retry
         progress_update("hashtags", f"Getting usernames from hashtags (attempt {current_attempt+1}/{max_retry_attempts})", 
-                        {"attempt": current_attempt+1, "max_attempts": max_retry_attempts})
+                        {"attempt": current_attempt+1, "max_attempts": max_retry_attempts, "percent": 10})
         scraper = HashtagScraper()
         usernames = await scraper.get_usernames_from_hashtags(max_retries=3, initial_limit=initial_limit)
         usernames = list(usernames)
@@ -282,27 +282,29 @@ async def main():
         test_mode = False
         if test_mode and original_count > 10:
             progress_update("hashtags", f"Testing mode: Limiting to 10 usernames out of {original_count}", 
-                           {"original_count": original_count, "limited_count": 10, "test_mode": True})
+                           {"original_count": original_count, "limited_count": 10, "test_mode": True, "percent": 15})
             usernames = usernames[:10]
         
         progress_update("hashtags", f"Found {len(usernames)} usernames", 
-                       {"username_count": len(usernames), "usernames": usernames})
+                       {"username_count": len(usernames), "usernames": usernames, "percent": 20})
         
-        # Get user profiles
-        progress_update("profiles", "Fetching user profiles...", {"username_count": len(usernames)})
+        # Get user profiles - 20-40% of progress
+        progress_update("profiles", "Fetching user profiles...", {"username_count": len(usernames), "percent": 25})
         user_profiles = await get_user_profiles(usernames)
+        progress_update("profiles", f"Fetched {len(user_profiles)} user profiles", 
+                       {"profile_count": len(user_profiles), "percent": 40})
         
-        # Extract emails
-        progress_update("emails", "Extracting emails from user bios...", {"profile_count": len(user_profiles)})
+        # Extract emails - 40-60% of progress
+        progress_update("emails", "Extracting emails from user bios...", {"profile_count": len(user_profiles), "percent": 45})
         emails = await extract_emails_from_bios(user_profiles)
         email_count = len([e for e in emails.values() if e])
         progress_update("emails", f"Found {email_count} emails out of {len(usernames)} usernames", 
-                       {"email_count": email_count, "username_count": len(usernames)})
+                       {"email_count": email_count, "username_count": len(usernames), "percent": 55})
         
         # Filter usernames to only process those with emails
         filtered_usernames = [username for username in usernames if emails.get(username)]
         progress_update("emails", f"Found {len(filtered_usernames)} usernames with email", 
-                       {"filtered_count": len(filtered_usernames)})
+                       {"filtered_count": len(filtered_usernames), "percent": 60})
         
         # If no emails were found or no usernames with emails were found,
         # and we haven't reached the maximum number of retries, increase the result limit and try again
@@ -319,6 +321,9 @@ async def main():
             
             progress_update("retry", f"No emails found. Attempt {current_attempt}/{max_retry_attempts}: Increasing result limit to {initial_limit}",
                            {"attempt": current_attempt, "max_attempts": max_retry_attempts, "new_limit": initial_limit})
+            
+            # Reset progress for next attempt
+            progress_update("hashtags", "Retrying with increased limit...", {"percent": 10})
             continue
         
         # If we found emails or reached the maximum number of retries, break the loop
@@ -329,17 +334,27 @@ async def main():
         if username in user_profiles:
             user_profiles[username]['email'] = email
     
+    # Browser automation - 60-95% of progress
     # Set up the controller for the browser automation
     ctrl = Controller(output_model=Influencer)
     
     # We already calculated filtered_usernames above
     progress_update("browser", f"Processing {len(filtered_usernames)} usernames with emails", 
-                   {"username_count": len(filtered_usernames), "usernames": filtered_usernames})
+                   {"username_count": len(filtered_usernames), "usernames": filtered_usernames, "percent": 60})
+    
+    # Calculate progress increments for each username
+    progress_per_username = 0
+    if filtered_usernames:
+        progress_per_username = 35 / len(filtered_usernames)  # 35% of progress (60-95%) divided by number of usernames
     
     # Process each username
     for i, username in enumerate(filtered_usernames):
+        # Calculate current progress based on completed usernames
+        current_progress = 60 + (i * progress_per_username)
+        
         progress_update("browser", f"Processing {username} ({i+1}/{len(filtered_usernames)})", 
-                       {"username": username, "current": i+1, "total": len(filtered_usernames)})
+                       {"username": username, "current": i+1, "total": len(filtered_usernames), 
+                        "percent": current_progress})
         browser = Browser(
             config=BrowserConfig(
                 browser_binary_path='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',         
@@ -348,14 +363,16 @@ async def main():
         )
         try:
             async with await browser.new_context() as ctx:
-                progress_update("browser_detail", f"Launching browser for {username}...", {"username": username})
+                progress_update("browser_detail", f"Launching browser for {username}...", 
+                              {"username": username, "percent": current_progress})
                 agent = Agent(
                     task=get_view_count.format(username=username),
                     llm=ChatOpenAI(model='gpt-4o'),
                     browser=browser,
                     controller=ctrl,
                 )
-                progress_update("browser_detail", f"Running agent to check if {username} is an influencer...", {"username": username})
+                progress_update("browser_detail", f"Running agent to check if {username} is an influencer...", 
+                              {"username": username, "percent": current_progress + (progress_per_username * 0.3)})
                 history = await agent.run()
                 data = Influencer.model_validate_json(history.final_result())
                 
@@ -366,7 +383,8 @@ async def main():
                 data.email = profile_data.get('email')
                 
                 progress_update("browser_detail", f"{username} - is_influencer: {data.is_influencer}", 
-                              {"username": username, "is_influencer": data.is_influencer})
+                              {"username": username, "is_influencer": data.is_influencer, 
+                               "percent": current_progress + (progress_per_username * 0.6)})
                 
                 # Save the influencer data to the database
                 db.save_influencer(
@@ -376,22 +394,25 @@ async def main():
                     bio=data.bio,
                     email=data.email
                 )
-                progress_update("browser_detail", f"Saved {username} data to database", {"username": username})
+                progress_update("browser_detail", f"Saved {username} data to database", 
+                              {"username": username, "percent": current_progress + (progress_per_username * 0.8)})
                 
                 await ctx.close()
         except Exception as e:
-            progress_update("error", f"Error processing {username}: {e}", {"username": username, "error": str(e)})
+            progress_update("error", f"Error processing {username}: {e}", 
+                          {"username": username, "error": str(e), "percent": current_progress + progress_per_username})
         finally:
             await browser.close()
 
         # delay for 5 seconds
-        progress_update("browser_detail", f"Waiting 5 seconds before the next profile...", {"username": username})
+        progress_update("browser_detail", f"Waiting 5 seconds before the next profile...", 
+                      {"username": username, "percent": current_progress + progress_per_username})
         await asyncio.sleep(5)
     
     # Get all influencers from the database
     influencers = db.get_influencers()
     progress_update("complete", f"Process completed. Found {len(influencers)} influencers in the database", 
-                   {"influencer_count": len(influencers)})
+                   {"influencer_count": len(influencers), "percent": 100})
 
 # Check if the database needs migration before running
 def check_db_columns():

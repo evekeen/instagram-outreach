@@ -7,3 +7,5 @@ user_profiles.json
 node_modules/
 influencers.db
 .DS_Store
+outreach_control.json
+outreach_progress.json

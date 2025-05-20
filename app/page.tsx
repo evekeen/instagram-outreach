@@ -246,8 +246,10 @@ export default function Home() {
       }
       
       if (data.progress) {
-        // Update current stage
-        setCurrentStage(data.progress.stage as ProgressStage);
+        // Update current stage (skip detail stages)
+        if (!data.progress.stage.includes('_detail')) {
+          setCurrentStage(data.progress.stage as ProgressStage);
+        }
         
         // Add to progress updates if it's a new update
         const newUpdate = {
@@ -406,7 +408,14 @@ export default function Home() {
   const getProgressPercentage = (): number => {
     if (!currentStage) return 0;
     
-    const stages: ProgressStage[] = ['start', 'hashtags', 'profiles', 'emails', 'browser', 'complete'];
+    // If we have a percent value from the server, use that directly
+    const lastUpdate = progressUpdates[progressUpdates.length - 1];
+    if (lastUpdate?.data?.percent) {
+      return lastUpdate.data.percent;
+    }
+    
+    // Otherwise calculate based on stage
+    const stages: ProgressStage[] = ['init', 'start', 'hashtags', 'profiles', 'emails', 'browser', 'complete'];
     const currentIndex = stages.indexOf(currentStage);
     
     if (currentIndex === -1) return 0;

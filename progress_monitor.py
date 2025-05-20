@@ -107,11 +107,21 @@ class ProgressMonitor:
             except ValueError:
                 percent = 0
         
+        # Clean up the stage name for better display - remove _detail suffixes
+        display_stage = stage
+        if stage.endswith('_detail'):
+            display_stage = stage.split('_')[0]
+        
+        # Include percent in data for frontend use
+        if data is None:
+            data = {}
+        data['percent'] = percent
+        
         self.last_progress = {
-            "stage": stage,
+            "stage": display_stage,  # Use the cleaned stage name
             "message": message,
             "percent": percent,
-            "data": data or {},
+            "data": data,
             "timestamp": time.time(),
             "is_running": True
         }
