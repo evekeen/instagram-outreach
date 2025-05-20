@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
       - they get 15% of the revenue from the app via the promo code      
       - users get 10% of the app via the promo code
       - we wire them money monthly and provide the promo code reports
-      
+
     The person is an Instagram influencer with the following bio: ${influencer.bio || 'No bio available'}
     
     The email should:
@@ -59,6 +59,10 @@ export async function POST(request: NextRequest) {
     2. Explain the benefits of joining our affiliate program
     3. Be concise and engaging
     4. Include a clear call to action
+
+    My signature:
+    "Best regards, 
+      Alexander."
     
     Format the response as JSON with 'subject' and 'body' fields.`;
 
