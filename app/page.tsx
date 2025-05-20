@@ -522,7 +522,10 @@ export default function Home() {
     setOutreachLogs([]);
     setProgressUpdates([]);
     setCurrentStage(null);
-    setIsRunningOutreach(true);
+    setStoppedNotificationShown(false);
+    
+    // Show a loading message but don't set running flag until we confirm the process is running
+    setOutreachLogs(prev => [...prev, 'Starting outreach process...']);
     
     try {
       // Start the outreach process
@@ -536,6 +539,7 @@ export default function Home() {
           status: 'info',
           duration: 3000,
         });
+        setIsRunningOutreach(true); // Set running state for existing process
       } else if (data.status === 'error') {
         toast({
           title: 'Error',
@@ -543,26 +547,59 @@ export default function Home() {
           status: 'error',
           duration: 3000,
         });
-        setIsRunningOutreach(false);
+        // Show the error in logs
+        setOutreachLogs(prev => [...prev, `Error: ${data.message || 'Failed to start process'}`]);
         return;
+      } else if (data.status === 'started') {
+        // Process was successfully started
+        // We'll only set the isRunningOutreach flag after confirming the process is active
+        setOutreachLogs(prev => [...prev, 'Process initiated. Starting monitoring...']);
+        
+        // Wait briefly for the process to initialize
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
       
-      // Start polling for updates
+      // Clear any existing polling interval
       if (statusPollingInterval) {
         clearInterval(statusPollingInterval);
       }
       
-      // Immediately get the first status
-      await pollStatus();
+      // Now check if the process is actually running before setting up polling
+      const initialStatusResponse = await fetch('/api/outreach-status');
+      const initialStatus = await initialStatusResponse.json();
       
-      // Then set up polling
-      const interval = setInterval(pollStatus, 1000);
-      setStatusPollingInterval(interval);
-      
+      // Check if the process has actually started running
+      if (initialStatus.status === 'running' && initialStatus.progress?.is_running) {
+        // Set running state now that we've confirmed the process is running
+        setIsRunningOutreach(true);
+        
+        // Update logs and progress with initial data
+        if (initialStatus.logs) {
+          setOutreachLogs(initialStatus.logs.map((log: any) => log.message));
+        }
+        
+        if (initialStatus.progress) {
+          if (!initialStatus.progress.stage.includes('_detail')) {
+            setCurrentStage(initialStatus.progress.stage as ProgressStage);
+          }
+        }
+        
+        // Set up regular polling
+        const interval = setInterval(pollStatus, 1000);
+        setStatusPollingInterval(interval);
+      } else {
+        // Process didn't start properly
+        setOutreachLogs(prev => [...prev, 'Process failed to start. Please try again.']);
+        toast({
+          title: 'Warning',
+          description: 'The process may not have started correctly. Please try again.',
+          status: 'warning',
+          duration: 5000,
+        });
+      }
     } catch (error) {
       console.error('Error starting outreach process:', error);
       setOutreachLogs(prev => [...prev, `Setup error: ${error}`]);
-      setIsRunningOutreach(false);
     }
   };
   
@@ -1328,7 +1365,60 @@ export default function Home() {
           </ModalHeader>
           
           <ModalBody pb={6}>
-            {!isRunningOutreach ? (
+            {/* Add a new transitional state for when process is initializing */}
+            {outreachLogs.length > 0 && !isRunningOutreach && !currentStage ? (
+              <Box>
+                <Text mb={4}>
+                  This process will:
+                </Text>
+                <Box pl={4} mb={6}>
+                  <Text>1. Search Instagram hashtags for relevant posts</Text>
+                  <Text>2. Extract usernames of content creators</Text>
+                  <Text>3. Fetch profile information for each username</Text>
+                  <Text>4. Extract emails from user bios</Text>
+                  <Text>5. Verify if users are influencers by checking view counts</Text>
+                </Box>
+                
+                <Box 
+                  p={4} 
+                  bg="blue.50" 
+                  borderRadius="md" 
+                  borderLeft="4px solid" 
+                  borderColor="blue.500" 
+                  mb={6}
+                  display="flex"
+                  alignItems="center"
+                >
+                  <Spinner size="sm" color="blue.500" mr={3} />
+                  <Box>
+                    <Text fontWeight="bold" color="blue.700">Initializing Process</Text>
+                    <Text fontSize="sm" color="blue.600">
+                      Starting the outreach process, please wait...
+                    </Text>
+                  </Box>
+                </Box>
+                
+                <Box 
+                  maxHeight="150px" 
+                  overflowY="auto" 
+                  p={3} 
+                  borderRadius="md" 
+                  bg="gray.50"
+                  border="1px solid"
+                  borderColor="gray.200"
+                  fontFamily="mono"
+                  fontSize="xs"
+                  mb={4}
+                >
+                  {outreachLogs.map((log, index) => (
+                    <Text key={index} mb={1}>
+                      {log}
+                    </Text>
+                  ))}
+                  <div ref={logsEndRef} />
+                </Box>
+              </Box>
+            ) : !isRunningOutreach ? (
               <Box>
                 <Text mb={4}>
                   This process will:
