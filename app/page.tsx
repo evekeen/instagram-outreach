@@ -140,9 +140,9 @@ export default function Home() {
         }
         
         @keyframes pulse {
-          0% { transform: scale(0.95); opacity: 0.5; }
-          50% { transform: scale(1); opacity: 0.8; }
-          100% { transform: scale(0.95); opacity: 0.5; }
+          0% { transform: translate(-50%, -50%) scale(0.95); opacity: 0.5; }
+          50% { transform: translate(-50%, -50%) scale(1); opacity: 0.8; }
+          100% { transform: translate(-50%, -50%) scale(0.95); opacity: 0.5; }
         }
         
         @keyframes shimmer {
@@ -256,21 +256,26 @@ export default function Home() {
                   height="150px" 
                   margin="0 auto"
                 >
-                  {/* Background pulsing circle */}
-                  <Box
+                  {/* Background pulsing circle - using a new approach for centering */}
+                  <Center
                     position="absolute"
-                    left="50%"
-                    top="50%"
-                    transform="translate(-50%, -50%)"
-                    width="120px"
-                    height="120px"
-                    borderRadius="50%"
-                    bgGradient="linear(to-r, cyan.300, purple.500)"
-                    opacity="0.3"
-                    style={{
-                      animation: "pulse 2s ease-in-out infinite"
-                    }}
-                  />
+                    left="0"
+                    right="0"
+                    top="0"
+                    bottom="0"
+                    margin="auto"
+                  >
+                    <Box
+                      width="120px"
+                      height="120px"
+                      borderRadius="50%"
+                      bgGradient="linear(to-r, cyan.300, purple.500)"
+                      opacity="0.3"
+                      style={{
+                        animation: "pulse2 2s ease-in-out infinite"
+                      }}
+                    />
+                  </Center>
                   
                   {/* Outer spinner */}
                   <Spinner
