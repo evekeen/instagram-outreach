@@ -17,6 +17,9 @@ export default function Home() {
   const [isSending, setIsSending] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRegenerating, setIsRegenerating] = useState<boolean>(false);
+  const [showOnlyWithEmail, setShowOnlyWithEmail] = useState<boolean>(false);
+  const [showOnlyInfluencers, setShowOnlyInfluencers] = useState<boolean>(false);
+  const [filteredInfluencers, setFilteredInfluencers] = useState<Influencer[]>([]);
   const toast = useToast();
 
   const fetchInfluencers = async (): Promise<void> => {
@@ -161,6 +164,21 @@ export default function Home() {
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  // Apply filters to the influencers list
+  const applyFilters = () => {
+    let filtered = [...influencers];
+    
+    if (showOnlyWithEmail) {
+      filtered = filtered.filter(inf => inf.email);
+    }
+    
+    if (showOnlyInfluencers) {
+      filtered = filtered.filter(inf => inf.is_influencer);
+    }
+    
+    setFilteredInfluencers(filtered);
+  };
+
   // Override fetchInfluencers to handle loading state
   const fetchInfluencersWithLoading = async (): Promise<void> => {
     setIsLoading(true);
@@ -170,6 +188,11 @@ export default function Home() {
       setIsLoading(false);
     }
   };
+
+  // Effect to apply filters whenever influencers or filter settings change
+  useEffect(() => {
+    applyFilters();
+  }, [influencers, showOnlyWithEmail, showOnlyInfluencers]);
 
   // Replace the useEffect to use the new function
   useEffect(() => {
@@ -215,7 +238,60 @@ export default function Home() {
         }
       `}</style>
       
-      <Heading mb={6}>Influencer Manager</Heading>
+      <Box display="flex" justifyContent="space-between" alignItems="center" mb={6}>
+        <Box>
+          <Heading>Influencer Manager</Heading>
+          {influencers.length > 0 && (
+            <Text fontSize="sm" color="gray.500" mt={1}>
+              Showing {filteredInfluencers.length} of {influencers.length} influencers
+            </Text>
+          )}
+        </Box>
+        
+        <Box display="flex" gap={4}>
+          <Box 
+            as="label" 
+            display="flex" 
+            alignItems="center" 
+            cursor="pointer"
+            padding="2"
+            borderRadius="md"
+            bgColor={showOnlyWithEmail ? "blue.50" : "transparent"}
+            border="1px solid"
+            borderColor={showOnlyWithEmail ? "blue.200" : "gray.200"}
+            transition="all 0.2s"
+          >
+            <input 
+              type="checkbox" 
+              checked={showOnlyWithEmail} 
+              onChange={() => setShowOnlyWithEmail(!showOnlyWithEmail)}
+              style={{ marginRight: '8px' }}
+            />
+            <Text fontSize="sm" fontWeight="medium">Only with Email</Text>
+          </Box>
+          
+          <Box 
+            as="label" 
+            display="flex" 
+            alignItems="center" 
+            cursor="pointer"
+            padding="2"
+            borderRadius="md"
+            bgColor={showOnlyInfluencers ? "green.50" : "transparent"}
+            border="1px solid"
+            borderColor={showOnlyInfluencers ? "green.200" : "gray.200"}
+            transition="all 0.2s"
+          >
+            <input 
+              type="checkbox" 
+              checked={showOnlyInfluencers} 
+              onChange={() => setShowOnlyInfluencers(!showOnlyInfluencers)}
+              style={{ marginRight: '8px' }}
+            />
+            <Text fontSize="sm" fontWeight="medium">Only Influencers</Text>
+          </Box>
+        </Box>
+      </Box>
       
       {isLoading ? (
         <Center py={10}>
@@ -223,9 +299,13 @@ export default function Home() {
         </Center>
       ) : (
         <Box overflowX="auto">
-          {influencers.length === 0 ? (
+          {filteredInfluencers.length === 0 ? (
             <Center py={10}>
-              <Text fontSize="lg">No influencers found</Text>
+              <Text fontSize="lg">
+                {influencers.length === 0 
+                  ? "No influencers found" 
+                  : "No influencers match the current filters"}
+              </Text>
             </Center>
           ) : (
             <Table variant="simple">
@@ -239,7 +319,7 @@ export default function Home() {
                 </Tr>
               </Thead>
               <Tbody>
-                {influencers.map((influencer) => (
+                {filteredInfluencers.map((influencer) => (
                   <Tr key={influencer.username}>
                     <Td>{influencer.username}</Td>
                     <Td>{influencer.full_name}</Td>

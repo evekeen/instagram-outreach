@@ -1,50 +1,32 @@
 import os
 import logging
-import json
 from typing import List, Dict, Any, Set
-from pathlib import Path
 from dotenv import load_dotenv
 
 from client import ApifyHelper
+from db_helper import DatabaseHelper
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-CACHE_FILE = "username_cache.json"
 
 class HashtagScraper:
     """Scrape Instagram hashtags to find potential influencers."""
     
     def __init__(self):
         self.apify = ApifyHelper()
+        self.db = DatabaseHelper()
         self.hashtags = os.getenv("HASHTAGS", "golf,golfswing").split(",")
         self.results_limit = int(os.getenv("RESULTS_LIMIT", "100"))
-    
-    def _load_cache(self) -> Dict[str, Any]:
-        if Path(CACHE_FILE).exists():
-            with open(CACHE_FILE, 'r') as f:
-                return json.load(f)
-        return {"hashtags": [], "results_limit": 0, "usernames": []}
-    
-    def _save_cache(self, usernames: Set[str]):
-        cache_data = {
-            "hashtags": self.hashtags,
-            "results_limit": self.results_limit,
-            "usernames": list(usernames)
-        }
-        with open(CACHE_FILE, 'w') as f:
-            json.dump(cache_data, f)
     
     async def get_usernames_from_hashtags(self) -> Set[str]:
         """
         Scrape hashtags and extract unique usernames of content creators.
         """
-        cache = self._load_cache()
-        if (cache["hashtags"] == self.hashtags and 
-            cache["results_limit"] == self.results_limit and 
-            cache["usernames"]):
-            logger.info("Using cached usernames")
-            return set(cache["usernames"])
+        # Check if we have cached usernames in the database
+        cached_usernames = self.db.get_usernames_from_cache(self.hashtags, self.results_limit)
+        if cached_usernames:
+            logger.info(f"Using {len(cached_usernames)} cached usernames from database")
+            return cached_usernames
         
         posts = await self.apify.scrape_hashtags(self.hashtags, self.results_limit)
         
@@ -56,7 +38,10 @@ class HashtagScraper:
                 usernames.add(username)
         
         logger.info(f"Found {len(usernames)} unique users from {len(posts)} posts")
-        self._save_cache(usernames)
+        
+        # Save usernames to database cache
+        self.db.save_usernames_to_cache(self.hashtags, self.results_limit, usernames)
+        
         return usernames
     
     def extract_hashtags_from_caption(self, caption: str) -> List[str]:

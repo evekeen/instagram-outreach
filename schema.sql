@@ -12,3 +12,12 @@ CREATE TABLE IF NOT EXISTS influencers (
     email_body TEXT,
     email_generated_at TIMESTAMP
 ); 
+
+CREATE TABLE IF NOT EXISTS hashtag_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hashtags TEXT,
+    results_limit INTEGER,
+    username TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(hashtags, results_limit, username)
+);

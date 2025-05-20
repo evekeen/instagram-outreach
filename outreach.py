@@ -10,6 +10,7 @@ from scraper import HashtagScraper
 from pydantic import BaseModel
 from client import ApifyHelper
 from openai import OpenAI
+from db_helper import DatabaseHelper
 
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 
@@ -45,13 +46,33 @@ class EmailMapping(BaseModel):
 async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
     """Fetch profile information including bio and full name for each username."""
     apify = ApifyHelper()
+    db = DatabaseHelper()
     profiles = {}
-            
+    
+    # Check which usernames we already have complete profile information for
+    loaded_profiles = db.get_profiles_by_usernames(usernames)
+    print(f"Found {len(loaded_profiles)} existing profiles in database")
+    
+    # Add loaded profiles to our results
+    for username, profile_data in loaded_profiles.items():
+        if profile_data.get('full_name') and profile_data.get('bio'):
+            profiles[username] = profile_data
+            print(f"Using existing profile for {username}")
+    
+    # Create list of usernames we still need to fetch
+    usernames_to_fetch = [username for username in usernames if username not in profiles]
+    
+    if not usernames_to_fetch:
+        print("All profiles already in database, no need to call Apify")
+        return profiles
+        
+    print(f"Fetching {len(usernames_to_fetch)} new profiles from Apify")
+    
     try:
         # The client.py already accepts an array of usernames
         # We just need to pass the batch directly
         input_data = {
-            "usernames": usernames,
+            "usernames": usernames_to_fetch,
             "resultsType": "details",
             "proxy": apify.proxy_config
         }
@@ -68,7 +89,7 @@ async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
                 }
                 print(f'Got profile for {username}: {profiles[username]}')
         
-        for username in usernames:
+        for username in usernames_to_fetch:
             if username not in profiles:
                 profiles[username] = {
                     'full_name': None,
@@ -78,26 +99,59 @@ async def get_user_profiles(usernames: List[str]) -> Dict[str, Dict[str, Any]]:
     
     except Exception as e:
         print(f"Error fetching profiles for batch: {e}")
-        for username in usernames:
+        for username in usernames_to_fetch:
             if username not in profiles:
                 profiles[username] = {
                     'full_name': None,
                     'bio': None
                 }        
     
+    # Save new profiles to database
+    new_profiles = {username: data for username, data in profiles.items() 
+                   if username in usernames_to_fetch}
+    
+    if new_profiles:
+        db.update_user_profiles(new_profiles)
+        print(f"Saved {len(new_profiles)} new user profiles to database")
+    
     return profiles
 
 async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
     """Use ChatGPT to extract emails from user bios."""
     client = OpenAI()
+    db = DatabaseHelper()
+    
+    # First, check which profiles already have emails in the database
+    usernames = list(profiles.keys())
+    existing_profiles = db.get_profiles_by_usernames(usernames)
+    
+    # Initialize the email mapping with existing emails
+    email_mapping = {}
+    usernames_to_process = []
+    
+    for username, profile in existing_profiles.items():
+        if profile.get('email'):
+            # If we already have an email, use it
+            email_mapping[username] = profile.get('email')
+            print(f"Using existing email for {username}: {profile.get('email')}")
+        elif username in profiles and profiles[username].get('bio'):
+            # If no email but has bio, add to processing list
+            usernames_to_process.append(username)
+    
+    print(f"Found {len(email_mapping)} existing emails in database")
+    print(f"Need to process {len(usernames_to_process)} bios for email extraction")
+    
+    if not usernames_to_process:
+        return email_mapping
     
     # Prepare data for the batch request to ChatGPT
-    profiles_with_bio = {username: data for username, data in profiles.items() 
+    profiles_to_process = {username: profiles[username] for username in usernames_to_process}
+    profiles_with_bio = {username: data for username, data in profiles_to_process.items() 
                          if data.get('bio')}
     
     if not profiles_with_bio:
-        print("No profiles with bio found")
-        return {}
+        print("No profiles with bio found for email extraction")
+        return email_mapping
     
     # Prepare the structured data for ChatGPT
     bio_data = []
@@ -132,43 +186,57 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
         content = response.choices[0].message.content
         mapping = EmailMapping.model_validate_json(content)
         
-        # Convert to username -> email mapping
-        email_mapping = {}
+        # Add new emails to the mapping
+        new_emails = {}
         for item in mapping.profiles:
             username = item.username
             email = item.email
-            if username:
+            if username and email:
                 email_mapping[username] = email
+                new_emails[username] = email
         
-        print(f"Found {len([e for e in email_mapping.values() if e])} emails from {len(email_mapping)} bios")
+        print(f"Found {len(new_emails)} new emails from {len(bio_data)} bios")
+        
+        # Save only new emails to database
+        if new_emails:
+            db.update_emails(new_emails)
+            print(f"Saved {len(new_emails)} new emails to database")
+        
         return email_mapping
     
     except Exception as e:
         print(f"Error extracting emails with ChatGPT: {e}")
-        return {}
+        return email_mapping
 
 async def main():
-    usernames = ['piff_golfs', 'selenasamuela']
+    db = DatabaseHelper()
+    
+    # Get usernames from hashtags
+    scraper = HashtagScraper()
+    usernames = await scraper.get_usernames_from_hashtags()
+    usernames = list(usernames)[:10]  # Limit to 10 usernames for testing, remove this limitation for production
     print(f'Found {len(usernames)} usernames: {usernames}')
     
+    # Get user profiles
     user_profiles = await get_user_profiles(usernames)
     
+    # Extract emails
     emails = await extract_emails_from_bios(user_profiles)
     print(f'emails: {emails}')
     
+    # Update the user_profiles dictionary with emails
     for username, email in emails.items():
         if username in user_profiles:
             user_profiles[username]['email'] = email
     
-    with open('user_profiles.json', 'w') as f:
-        json.dump(user_profiles, f, indent=2)
-    
+    # Set up the controller for the browser automation
     ctrl = Controller(output_model=Influencer)
-    influencers = []
     
+    # Filter usernames to only process those with emails
     filtered_usernames = [username for username in usernames if user_profiles.get(username, {}).get('email')]
     print(f'Processing {len(filtered_usernames)} usernames with emails: {filtered_usernames}')
     
+    # Process each username
     for username in filtered_usernames:
         print(f'Processing {username}')
         browser = Browser(
@@ -195,8 +263,15 @@ async def main():
                 data.email = profile_data.get('email')
                 
                 print(f'{username} - {data}')
-                if data.is_influencer:
-                    influencers.append(data)
+                
+                # Save the influencer data to the database
+                db.save_influencer(
+                    username=data.username,
+                    is_influencer=data.is_influencer,
+                    full_name=data.full_name,
+                    bio=data.bio,
+                    email=data.email
+                )
                 
                 await ctx.close()
         except Exception as e:
@@ -207,11 +282,9 @@ async def main():
         # delay for 5 seconds
         await asyncio.sleep(5)
     
-    # Save influencers to a file
-    with open('influencers.json', 'w') as f:
-        json.dump([i.model_dump() for i in influencers], f, indent=2)
-    
-    print(f"Found {len(influencers)} influencers. Results saved to 'influencers.json'")
+    # Get all influencers from the database
+    influencers = db.get_influencers()
+    print(f"Found {len(influencers)} influencers in the database")
 
 if __name__ == '__main__':
     asyncio.run(main())
