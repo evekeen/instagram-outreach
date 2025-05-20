@@ -145,6 +145,12 @@ export default function Home() {
           100% { transform: translate(-50%, -50%) scale(0.95); opacity: 0.5; }
         }
         
+        @keyframes pulse2 {
+          0% { transform: scale(0.95); opacity: 0.5; }
+          50% { transform: scale(1); opacity: 0.8; }
+          100% { transform: scale(0.95); opacity: 0.5; }
+        }
+        
         @keyframes shimmer {
           0% { background-position: 0% 0; }
           100% { background-position: 200% 0; }
@@ -324,23 +330,29 @@ export default function Home() {
                   />
                   
                   {/* Center icon with subtle float animation */}
-                  <Box 
+                  <Center
                     position="absolute"
-                    left="50%"
-                    top="50%"
-                    transform="translate(-50%, -50%)"
-                    fontSize="2xl"
+                    left="0"
+                    right="0"
+                    top="0"
+                    bottom="0"
+                    margin="auto"
                     zIndex="2"
-                    style={{
-                      animation: "pulse 2.5s ease-in-out infinite"
-                    }}
                   >
-                    <Text bgGradient="linear(to-l, #7928CA, #FF0080)" 
-                          bgClip="text" 
-                          fontWeight="bold">
-                      AI
-                    </Text>
-                  </Box>
+                    <Box
+                      fontSize="2xl"
+                      style={{
+                        animation: "pulse2 2.5s ease-in-out infinite"
+                      }}
+                    >
+                      <Text 
+                        bgGradient="linear(to-l, #7928CA, #FF0080)" 
+                        bgClip="text" 
+                        fontWeight="bold">
+                        AI
+                      </Text>
+                    </Box>
+                  </Center>
                   
                   {/* Decorative elements with float animations */}
                   <Box
