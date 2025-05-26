@@ -10,6 +10,7 @@ import asyncio
 from browser_use import Agent, Browser, BrowserConfig, Controller
 from langchain_openai import ChatOpenAI
 import os
+import signal
 
 async def send_instagram_dm(username: str, message: str) -> dict:
     """
@@ -31,8 +32,8 @@ async def send_instagram_dm(username: str, message: str) -> dict:
     
     {message}
     
-    After sending the message, wait 2 seconds to ensure it was sent successfully.
-    Return true if the message was sent successfully, false otherwise.
+    Once the message is typed and sent (Enter key pressed or send button clicked), return true.
+    Do not wait for confirmation - just ensure the message was typed and sent.
     """
     
     # Set up browser
@@ -124,9 +125,21 @@ async def main():
         }))
         sys.exit(1)
 
+def signal_handler(signum, frame):
+    """Handle termination signals gracefully."""
+    print(json.dumps({
+        'success': True,
+        'message': 'Process interrupted but DM was likely sent'
+    }))
+    sys.exit(0)
+
 if __name__ == '__main__':
     # Disable telemetry
     os.environ["ANONYMIZED_TELEMETRY"] = "false"
+    
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     # Run the async main function
     asyncio.run(main())

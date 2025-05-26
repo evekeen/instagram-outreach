@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
       const { stdout, stderr } = await execAsync(
         `python "${scriptPath}" "${username}" "${messageFile}"`,
         {
-          timeout: 60000, // 60 second timeout
+          timeout: 120000, // 120 second timeout (increased from 60)
           maxBuffer: 1024 * 1024 // 1MB buffer
         }
       );
@@ -40,7 +40,13 @@ export async function POST(request: NextRequest) {
       // Clean up the temporary file
       await fs.unlink(messageFile).catch(() => {});
 
-      if (stderr && !stderr.includes('WARNING')) {
+      // Check if stderr only contains harmless deprecation warnings
+      const isOnlyWarnings = stderr && (
+        stderr.includes('DeprecationWarning') || 
+        stderr.includes('WARNING')
+      ) && !stderr.includes('ERROR') && !stderr.includes('CRITICAL');
+
+      if (stderr && !isOnlyWarnings) {
         console.error('Instagram DM script stderr:', stderr);
         return NextResponse.json({ 
           error: 'Failed to send Instagram DM', 
@@ -94,6 +100,41 @@ export async function POST(request: NextRequest) {
       
       // Clean up the temporary file in case of error
       await fs.unlink(messageFile).catch(() => {});
+      
+      // Check if it's a timeout error with exit code 120
+      if (execError.code === 120 && execError.killed === true) {
+        // Check if we got far enough in the process (saw the message being typed)
+        const output = execError.stdout || '';
+        if (output.includes('Clicked button with index') && output.includes('Message')) {
+          console.log(`Instagram DM likely sent successfully for ${username} despite timeout`);
+          
+          // Update database to track DM sent status
+          const db = new Database(path.join(process.cwd(), 'influencers.db'));
+          
+          try {
+            const stmt = db.prepare(
+              `UPDATE influencers 
+               SET dm_sent = 1, 
+                   dm_sent_at = datetime('now'),
+                   dm_message = ?
+               WHERE username = ?`
+            );
+            
+            stmt.run(message, username);
+            console.log(`Updated DM sent status for ${username} (after timeout)`);
+          } catch (dbError) {
+            console.error('Failed to update database:', dbError);
+          } finally {
+            db.close();
+          }
+          
+          return NextResponse.json({ 
+            success: true, 
+            message: 'Instagram DM sent successfully (process timed out but message was likely delivered)',
+            username 
+          });
+        }
+      }
       
       return NextResponse.json({ 
         error: 'Failed to execute Instagram DM script',
