@@ -40,6 +40,10 @@ export default function Home() {
   const [isRunningYolo, setIsRunningYolo] = useState<boolean>(false);
   const [yoloLogs, setYoloLogs] = useState<string[]>([]);
   const [yoloProgress, setYoloProgress] = useState<any>(null);
+  const [isBatchSendModalOpen, setIsBatchSendModalOpen] = useState<boolean>(false);
+  const [isRunningBatchSend, setIsRunningBatchSend] = useState<boolean>(false);
+  const [batchSendProgress, setBatchSendProgress] = useState<{current: number, total: number, currentUser: string}>({current: 0, total: 0, currentUser: ''});
+  const [batchSendCancelled, setBatchSendCancelled] = useState<boolean>(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const yoloLogsEndRef = useRef<HTMLDivElement>(null);
@@ -163,10 +167,12 @@ export default function Home() {
       
       // Update the local state to reflect the sent status
       if (selectedInfluencer) {
+        const updatedInfluencer = {...selectedInfluencer, email_sent: true, email_sent_at: new Date().toISOString()};
+        setSelectedInfluencer(updatedInfluencer);
         setInfluencers(prevInfluencers => 
           prevInfluencers.map(inf => 
             inf.username === selectedInfluencer.username 
-              ? {...inf, email_sent: true, email_sent_at: new Date().toISOString()}
+              ? updatedInfluencer
               : inf
           )
         );
@@ -925,6 +931,193 @@ export default function Home() {
     }
   }, [isYoloModalOpen]);
 
+  // Batch send function
+  const batchGenerateAndSend = async () => {
+    // Get all influencers who haven't been contacted
+    const uncontactedInfluencers = filteredInfluencers.filter(
+      inf => !inf.email_sent && !inf.dm_sent
+    );
+    
+    if (uncontactedInfluencers.length === 0) {
+      toast({
+        title: 'No uncontacted influencers',
+        description: 'All influencers have already been contacted.',
+        status: 'info',
+        duration: 3000,
+      });
+      return;
+    }
+    
+    setIsRunningBatchSend(true);
+    setBatchSendCancelled(false);
+    setBatchSendProgress({
+      current: 0,
+      total: uncontactedInfluencers.length,
+      currentUser: ''
+    });
+    setIsBatchSendModalOpen(true);
+    
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (let i = 0; i < uncontactedInfluencers.length; i++) {
+      if (batchSendCancelled) {
+        break;
+      }
+      
+      const influencer = uncontactedInfluencers[i];
+      setBatchSendProgress({
+        current: i + 1,
+        total: uncontactedInfluencers.length,
+        currentUser: influencer.username
+      });
+      
+      try {
+        // Check if draft already exists
+        let emailSubject = influencer.email_subject;
+        let emailBody = influencer.email_body;
+        
+        // If no draft exists, generate one
+        if (!emailSubject || !emailBody) {
+          try {
+            const response = await fetch('/api/generate-email', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ influencer }),
+            });
+            
+            if (!response.ok) {
+              throw new Error('Failed to generate email');
+            }
+            
+            const draft = await response.json();
+            emailSubject = draft.subject;
+            emailBody = draft.body;
+            
+            // Save the draft
+            await fetch('/api/save-email-draft', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: influencer.username,
+                subject: emailSubject,
+                body: emailBody
+              }),
+            });
+            
+            // Update local state with the draft
+            setInfluencers(prevInfluencers => 
+              prevInfluencers.map(inf => 
+                inf.username === influencer.username 
+                  ? {...inf, email_subject: emailSubject, email_body: emailBody}
+                  : inf
+              )
+            );
+          } catch (error) {
+            console.error(`Failed to generate draft for ${influencer.username}:`, error);
+            failCount++;
+            continue;
+          }
+        }
+        
+        // Decide whether to send email or DM
+        if (influencer.email) {
+          // Send email
+          try {
+            const response = await fetch('/api/send-email', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                to: influencer.email,
+                subject: emailSubject,
+                body: emailBody,
+                influencer: influencer
+              }),
+            });
+            
+            const result = await response.json();
+            if (!result.error) {
+              successCount++;
+              // Update local state
+              setInfluencers(prevInfluencers => 
+                prevInfluencers.map(inf => 
+                  inf.username === influencer.username 
+                    ? {...inf, email_sent: true, email_sent_at: new Date().toISOString()}
+                    : inf
+                )
+              );
+            } else {
+              failCount++;
+            }
+          } catch (error) {
+            failCount++;
+          }
+        } else {
+          // Send Instagram DM
+          try {
+            const response = await fetch('/api/send-instagram-dm', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: influencer.username,
+                message: emailBody,
+                influencer: influencer
+              }),
+            });
+            
+            const result = await response.json();
+            if (!result.error) {
+              successCount++;
+              // Update local state
+              setInfluencers(prevInfluencers => 
+                prevInfluencers.map(inf => 
+                  inf.username === influencer.username 
+                    ? {...inf, dm_sent: true, dm_sent_at: new Date().toISOString(), dm_message: emailBody}
+                    : inf
+                )
+              );
+            } else {
+              failCount++;
+            }
+          } catch (error) {
+            failCount++;
+          }
+        }
+        
+        // Small delay between sends
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+      } catch (error) {
+        console.error(`Failed to process ${influencer.username}:`, error);
+        failCount++;
+      }
+    }
+    
+    setIsRunningBatchSend(false);
+    
+    const wasCompleted = !batchSendCancelled;
+    if (wasCompleted) {
+      toast({
+        title: 'Batch Send Complete',
+        description: `Successfully sent ${successCount} messages. ${failCount} failed.`,
+        status: successCount > 0 ? 'success' : 'warning',
+        duration: 5000,
+        isClosable: true,
+      });
+    } else {
+      toast({
+        title: 'Batch Send Cancelled',
+        description: `Sent ${successCount} messages before cancellation.`,
+        status: 'info',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+    
+    // Refresh influencer list
+    fetchInfluencersWithLoading();
+  };
+
   const resetDatabase = async () => {
     try {
       setIsResetting(true);
@@ -1034,6 +1227,15 @@ export default function Home() {
             }}
           >
             YOLO
+          </Button>
+          
+          <Button
+            colorScheme="orange"
+            leftIcon={<span role="img" aria-label="send">📨</span>}
+            onClick={batchGenerateAndSend}
+            isDisabled={filteredInfluencers.filter(inf => !inf.email_sent && !inf.dm_sent).length === 0}
+          >
+            Generate & Send to All
           </Button>
           
           <Button
@@ -1525,13 +1727,16 @@ export default function Home() {
                             
                             // Update the local state to reflect the DM sent status
                             if (selectedInfluencer) {
-                              setInfluencers(prevInfluencers => 
-                                prevInfluencers.map(inf => 
+                              const updatedInfluencer = {...selectedInfluencer, dm_sent: true, dm_sent_at: new Date().toISOString(), dm_message: emailDraft.body};
+                              setSelectedInfluencer(updatedInfluencer);
+                              setInfluencers(prevInfluencers => {
+                                const updated = prevInfluencers.map(inf => 
                                   inf.username === selectedInfluencer.username 
-                                    ? {...inf, dm_sent: true, dm_sent_at: new Date().toISOString(), dm_message: emailDraft.body}
+                                    ? updatedInfluencer
                                     : inf
-                                )
-                              );
+                                );
+                                return updated;
+                              });
                             }
                             
                             // Close the modal after sending
@@ -2174,6 +2379,72 @@ export default function Home() {
                     Stop YOLO Process
                   </Button>
                 )}
+              </Box>
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+      
+      {/* Batch Send Modal */}
+      <Modal 
+        isOpen={isBatchSendModalOpen} 
+        onClose={() => !isRunningBatchSend && setIsBatchSendModalOpen(false)} 
+        size="md"
+        closeOnOverlayClick={false}
+      >
+        <ModalOverlay bg="blackAlpha.300" backdropFilter="blur(10px)" />
+        <ModalContent>
+          <ModalHeader>
+            Generate & Send to All
+          </ModalHeader>
+          {!isRunningBatchSend && (
+            <ModalCloseButton />
+          )}
+          
+          <ModalBody pb={6}>
+            {isRunningBatchSend ? (
+              <Box>
+                <Text mb={4}>
+                  Processing {batchSendProgress.current} of {batchSendProgress.total} influencers...
+                </Text>
+                
+                <Progress 
+                  value={(batchSendProgress.current / batchSendProgress.total) * 100} 
+                  size="lg" 
+                  colorScheme="orange"
+                  borderRadius="md"
+                  hasStripe
+                  isAnimated
+                  mb={4}
+                />
+                
+                {batchSendProgress.currentUser && (
+                  <Box p={3} bg="gray.50" borderRadius="md" mb={4}>
+                    <Text fontSize="sm" fontWeight="bold">Currently processing:</Text>
+                    <Text fontSize="sm">@{batchSendProgress.currentUser}</Text>
+                  </Box>
+                )}
+                
+                <Button
+                  colorScheme="red"
+                  variant="outline"
+                  width="100%"
+                  onClick={() => setBatchSendCancelled(true)}
+                >
+                  Cancel Process
+                </Button>
+              </Box>
+            ) : (
+              <Box textAlign="center" py={4}>
+                <Text fontSize="lg" fontWeight="bold" mb={2}>
+                  Process Complete!
+                </Text>
+                <Button
+                  colorScheme="blue"
+                  onClick={() => setIsBatchSendModalOpen(false)}
+                >
+                  Close
+                </Button>
               </Box>
             )}
           </ModalBody>

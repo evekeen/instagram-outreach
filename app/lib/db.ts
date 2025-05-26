@@ -27,11 +27,24 @@ const dbPath = path.join(__dirname, '../../influencers.db');
 const db = new Database(dbPath);
 
 export function getAllInfluencers(): Influencer[] {
-  return db.prepare('SELECT * FROM influencers').all() as Influencer[];
+  const rows = db.prepare('SELECT * FROM influencers').all() as any[];
+  return rows.map(row => ({
+    ...row,
+    is_influencer: !!row.is_influencer,
+    email_sent: !!row.email_sent,
+    dm_sent: !!row.dm_sent
+  }));
 }
 
 export function getInfluencerByUsername(username: string): Influencer | undefined {
-  return db.prepare('SELECT * FROM influencers WHERE username = ?').get(username) as Influencer | undefined;
+  const row = db.prepare('SELECT * FROM influencers WHERE username = ?').get(username) as any;
+  if (!row) return undefined;
+  return {
+    ...row,
+    is_influencer: !!row.is_influencer,
+    email_sent: !!row.email_sent,
+    dm_sent: !!row.dm_sent
+  };
 }
 
 export function updateEmailSentStatus(username: string, sent: boolean = true): void {
