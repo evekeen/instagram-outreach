@@ -27,11 +27,12 @@ async def send_instagram_dm(username: str, message: str) -> dict:
     send_dm_task = f"""
     Go to https://www.instagram.com/{username}/
     Click on the "Message" button on their profile page.
-    Wait for the DM conversation to open.
+    Wait for the DM conversation to open. Make sure there is no previous conversation. If there is a conversation, finish the task here.
     Type the following message in the message input field and send it:
-    
+    <message>
     {message}
-    
+    </message>
+    Do not send each line of the message separately. Send the entire message at once.
     Once the message is typed and sent (Enter key pressed or send button clicked), return true.
     Do not wait for confirmation - just ensure the message was typed and sent.
     """
