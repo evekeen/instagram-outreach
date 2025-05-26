@@ -31,7 +31,7 @@ class DatabaseHelper:
             conn.close()
     
     def get_usernames_from_cache(self, hashtags: List[str], results_limit: int) -> Set[str]:
-        """Get usernames from the database cache."""
+        """Get usernames from the database cache that are not expired (30 minutes)."""
         conn = self.get_connection()
         try:
             cursor = conn.cursor()
@@ -40,12 +40,17 @@ class DatabaseHelper:
             hashtags_str = ','.join(sorted(hashtags))
             
             # Check if we have cached usernames for these hashtags and limit
+            # Only get entries that are less than 30 minutes old
             cursor.execute('''
                 SELECT username FROM hashtag_cache 
                 WHERE hashtags = ? AND results_limit = ?
+                AND datetime(created_at) > datetime('now', '-30 minutes')
             ''', (hashtags_str, results_limit))
             
             usernames = set(row[0] for row in cursor.fetchall())
+            
+            if usernames:
+                logger.info(f"Found {len(usernames)} cached usernames (not expired)")
             
             return usernames
         except Exception as e:
@@ -108,18 +113,33 @@ class DatabaseHelper:
         try:
             cursor = conn.cursor()
             
-            # Get count of unique hashtag+limit combinations
-            cursor.execute('SELECT COUNT(DISTINCT hashtags || results_limit) FROM hashtag_cache')
-            unique_combos = cursor.fetchone()[0]
+            # Get count of unique hashtag+limit combinations (active)
+            cursor.execute('''
+                SELECT COUNT(DISTINCT hashtags || results_limit) FROM hashtag_cache
+                WHERE datetime(created_at) > datetime('now', '-30 minutes')
+            ''')
+            active_combos = cursor.fetchone()[0]
             
-            # Get total count of cache entries
+            # Get total count of active cache entries
+            cursor.execute('''
+                SELECT COUNT(*) FROM hashtag_cache
+                WHERE datetime(created_at) > datetime('now', '-30 minutes')
+            ''')
+            active_entries = cursor.fetchone()[0]
+            
+            # Get total count of all cache entries (including expired)
             cursor.execute('SELECT COUNT(*) FROM hashtag_cache')
             total_entries = cursor.fetchone()[0]
             
-            # Get counts per hashtag+limit combination
+            # Get expired entries count
+            expired_entries = total_entries - active_entries
+            
+            # Get counts per hashtag+limit combination (active only)
             cursor.execute('''
-                SELECT hashtags, results_limit, COUNT(*) as count
+                SELECT hashtags, results_limit, COUNT(*) as count, 
+                       MIN(created_at) as oldest, MAX(created_at) as newest
                 FROM hashtag_cache
+                WHERE datetime(created_at) > datetime('now', '-30 minutes')
                 GROUP BY hashtags, results_limit
                 ORDER BY count DESC
             ''')
@@ -129,11 +149,15 @@ class DatabaseHelper:
                 combos.append({
                     'hashtags': row[0],
                     'results_limit': row[1],
-                    'count': row[2]
+                    'count': row[2],
+                    'oldest': row[3],
+                    'newest': row[4]
                 })
             
             return {
-                'unique_combos': unique_combos,
+                'active_combos': active_combos,
+                'active_entries': active_entries,
+                'expired_entries': expired_entries,
                 'total_entries': total_entries,
                 'combos': combos
             }
@@ -429,6 +453,32 @@ class DatabaseHelper:
             return updated_count
         except Exception as e:
             logger.error(f"Error updating emails: {e}")
+            conn.rollback()
+            return 0
+        finally:
+            conn.close()
+    
+    def clean_expired_cache(self):
+        """Remove expired cache entries (older than 30 minutes)."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Delete entries older than 30 minutes
+            cursor.execute('''
+                DELETE FROM hashtag_cache 
+                WHERE datetime(created_at) <= datetime('now', '-30 minutes')
+            ''')
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} expired cache entries")
+                
+            return deleted_count
+        except Exception as e:
+            logger.error(f"Error cleaning expired cache: {e}")
             conn.rollback()
             return 0
         finally:

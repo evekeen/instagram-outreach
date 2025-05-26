@@ -59,10 +59,13 @@ export async function POST(request: NextRequest) {
     2. Explain the benefits of joining our affiliate program
     3. Be concise and engaging
     4. Include a clear call to action
+    5. Use the same language as the influencer in the email and in the subject line.
+    6. Short and concise subject with the value proposition.
 
     Do not use markdown, use plain text formatting. No bullshit, be professional and direct. Outline the benefits and the value proposition.
+    Analyze the language of the influencer by readinug the full name and the bio and use the same language in the email.
 
-    My signature:
+    My signature in English:
     "Best regards, 
       Alexander."
     

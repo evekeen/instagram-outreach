@@ -15,6 +15,9 @@ export interface Influencer {
   email_subject?: string | null;
   email_body?: string | null;
   email_generated_at?: string | null;
+  dm_sent?: boolean;
+  dm_sent_at?: string | null;
+  dm_message?: string | null;
 }
 
 const __filename = fileURLToPath(import.meta.url);

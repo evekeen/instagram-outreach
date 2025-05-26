@@ -1,6 +1,6 @@
 'use client';
 
-import { Box, Button, Container, Heading, Modal, ModalBody, ModalCloseButton, ModalContent, ModalHeader, ModalOverlay, Table, Tbody, Td, Text, Th, Thead, Tr, useToast, Spinner, Center, Progress, Badge, Stack, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, Divider, Code, Flex } from '@chakra-ui/react';
+import { Box, Button, Container, Heading, Modal, ModalBody, ModalCloseButton, ModalContent, ModalHeader, ModalOverlay, Table, Tbody, Td, Text, Th, Thead, Tr, useToast, Spinner, Center, Progress, Badge, Stack, Accordion, AccordionItem, AccordionButton, AccordionPanel, AccordionIcon, Divider, Code, Flex, Link, Menu, MenuButton, MenuList, MenuItem, MenuDivider, IconButton } from '@chakra-ui/react';
 import { useState, useEffect, useRef } from 'react';
 import { Influencer } from './lib/db';
 
@@ -26,6 +26,7 @@ export default function Home() {
   const [isSending, setIsSending] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRegenerating, setIsRegenerating] = useState<boolean>(false);
+  const [isSendingDM, setIsSendingDM] = useState<boolean>(false);
   const [showOnlyWithEmail, setShowOnlyWithEmail] = useState<boolean>(true);
   const [showOnlyInfluencers, setShowOnlyInfluencers] = useState<boolean>(true);
   const [filteredInfluencers, setFilteredInfluencers] = useState<Influencer[]>([]);
@@ -690,6 +691,56 @@ export default function Home() {
   };
   
   // Function to reset the database
+  const updateInfluencerStatus = async (username: string, statusType: string, value: boolean) => {
+    try {
+      const response = await fetch('/api/update-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, statusType, value }),
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        // Update local state
+        setInfluencers(prevInfluencers => 
+          prevInfluencers.map(inf => {
+            if (inf.username === username) {
+              switch (statusType) {
+                case 'email_sent':
+                  return {...inf, email_sent: value, email_sent_at: value ? new Date().toISOString() : null};
+                case 'dm_sent':
+                  return {...inf, dm_sent: value, dm_sent_at: value ? new Date().toISOString() : null};
+                case 'reset':
+                  return {...inf, email_sent: false, email_sent_at: null, dm_sent: false, dm_sent_at: null};
+                default:
+                  return inf;
+              }
+            }
+            return inf;
+          })
+        );
+        
+        toast({
+          title: 'Status Updated',
+          description: statusType === 'reset' ? 'All statuses reset' : `${statusType.replace('_', ' ')} marked as ${value ? 'sent' : 'not sent'}`,
+          status: 'success',
+          duration: 2000,
+        });
+      } else {
+        throw new Error(result.error);
+      }
+    } catch (error) {
+      console.error('Error updating status:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update status',
+        status: 'error',
+        duration: 3000,
+      });
+    }
+  };
+
   const resetDatabase = async () => {
     try {
       setIsResetting(true);
@@ -886,42 +937,96 @@ export default function Home() {
               <Tbody>
                 {filteredInfluencers.map((influencer) => (
                   <Tr key={influencer.username}>
-                    <Td>{influencer.username}</Td>
+                    <Td>
+                      <Link 
+                        href={`https://instagram.com/${influencer.username}`}
+                        isExternal
+                        color="blue.600"
+                        fontWeight="medium"
+                        _hover={{ 
+                          textDecoration: 'underline',
+                          color: 'blue.700'
+                        }}
+                      >
+                        @{influencer.username}
+                      </Link>
+                    </Td>
                     <Td>{influencer.full_name}</Td>
                     <Td>{influencer.email}</Td>
                     <Td>
-                      {influencer.email_sent ? (
-                        <Text color="green.500" fontWeight="bold">
-                          ✓ Sent
-                        </Text>
-                      ) : influencer.email_subject && influencer.email_body ? (
-                        <Text color="blue.500">
-                          Draft ready
-                        </Text>
-                      ) : (
-                        <Text color="gray.500">
-                          Not started
-                        </Text>
-                      )}
+                      <Box>
+                        {!!influencer.email_sent && (
+                          <Text color="green.500" fontWeight="bold" fontSize="sm">
+                            ✉️ Email sent
+                          </Text>
+                        )}
+                        {!!influencer.dm_sent && (
+                          <Text color="purple.500" fontWeight="bold" fontSize="sm">
+                            📱 DM sent
+                          </Text>
+                        )}
+                        {!influencer.email_sent && !influencer.dm_sent && (
+                          influencer.email_subject && influencer.email_body ? (
+                            <Text color="blue.500" fontSize="sm">
+                              Draft ready
+                            </Text>
+                          ) : (
+                            <Text color="gray.500" fontSize="sm">
+                              Not started
+                            </Text>
+                          )
+                        )}
+                      </Box>
                     </Td>
                     <Td>
-                      <Button
-                        colorScheme={isGenerating && selectedInfluencer?.username === influencer.username ? "purple" : "blue"}
-                        size="sm"
-                        onClick={() => generateEmailDraft(influencer)}
-                        isLoading={isGenerating && selectedInfluencer?.username === influencer.username}
-                        loadingText="AI Generating"
-                        bgGradient={isGenerating && selectedInfluencer?.username === influencer.username ? 
-                          "linear(to-r, purple.500, blue.500)" : ""}
-                      >
-                        {isGenerating && selectedInfluencer?.username === influencer.username 
-                          ? "AI Generating" 
-                          : influencer.email_sent 
-                            ? "Edit Email" 
-                            : influencer.email_subject && influencer.email_body 
-                              ? "View/Edit Draft" 
-                              : "Generate Email"}
-                      </Button>
+                      <Flex gap={2}>
+                        <Button
+                          colorScheme={isGenerating && selectedInfluencer?.username === influencer.username ? "purple" : "blue"}
+                          size="sm"
+                          onClick={() => generateEmailDraft(influencer)}
+                          isLoading={isGenerating && selectedInfluencer?.username === influencer.username}
+                          loadingText="AI Generating"
+                          bgGradient={isGenerating && selectedInfluencer?.username === influencer.username ? 
+                            "linear(to-r, purple.500, blue.500)" : ""}
+                        >
+                          {isGenerating && selectedInfluencer?.username === influencer.username 
+                            ? "AI Generating" 
+                            : influencer.email_sent 
+                              ? "Edit Email" 
+                              : influencer.email_subject && influencer.email_body 
+                                ? "View/Edit Draft" 
+                                : "Generate Email"}
+                        </Button>
+                        
+                        <Menu>
+                          <MenuButton
+                            as={IconButton}
+                            aria-label="Options"
+                            icon={<Text>⋮</Text>}
+                            variant="ghost"
+                            size="sm"
+                          />
+                          <MenuList>
+                            <MenuItem 
+                              onClick={() => updateInfluencerStatus(influencer.username, 'email_sent', !influencer.email_sent)}
+                            >
+                              {influencer.email_sent ? '❌ Mark Email Not Sent' : '✅ Mark Email Sent'}
+                            </MenuItem>
+                            <MenuItem 
+                              onClick={() => updateInfluencerStatus(influencer.username, 'dm_sent', !influencer.dm_sent)}
+                            >
+                              {influencer.dm_sent ? '❌ Mark DM Not Sent' : '✅ Mark DM Sent'}
+                            </MenuItem>
+                            <MenuDivider />
+                            <MenuItem 
+                              onClick={() => updateInfluencerStatus(influencer.username, 'reset', false)}
+                              color="red.500"
+                            >
+                              🔄 Reset All Statuses
+                            </MenuItem>
+                          </MenuList>
+                        </Menu>
+                      </Flex>
                     </Td>
                   </Tr>
                 ))}
@@ -1199,6 +1304,84 @@ export default function Home() {
                     </Button>
                     
                     <Button
+                      colorScheme="purple"
+                      variant="outline"
+                      onClick={async () => {
+                        // Save the draft first
+                        if (selectedInfluencer) {
+                          try {
+                            setIsSendingDM(true);
+                            const response = await fetch('/api/save-email-draft', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                username: selectedInfluencer.username,
+                                subject: emailDraft.subject,
+                                body: emailDraft.body
+                              }),
+                            });
+                            
+                            if (!response.ok) {
+                              console.warn('Failed to save draft before sending DM');
+                            }
+                            
+                            // Then send via Instagram DM
+                            const dmResponse = await fetch('/api/send-instagram-dm', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                username: selectedInfluencer.username,
+                                message: emailDraft.body,
+                                influencer: selectedInfluencer
+                              }),
+                            });
+                            
+                            const result = await dmResponse.json();
+                            
+                            if (result.error) {
+                              throw new Error(result.error);
+                            }
+                            
+                            toast({
+                              title: 'Success',
+                              description: 'Instagram DM sent successfully',
+                              status: 'success',
+                              duration: 3000,
+                            });
+                            
+                            // Update the local state to reflect the DM sent status
+                            if (selectedInfluencer) {
+                              setInfluencers(prevInfluencers => 
+                                prevInfluencers.map(inf => 
+                                  inf.username === selectedInfluencer.username 
+                                    ? {...inf, dm_sent: true, dm_sent_at: new Date().toISOString(), dm_message: emailDraft.body}
+                                    : inf
+                                )
+                              );
+                            }
+                            
+                            // Close the modal after sending
+                            setIsModalOpen(false);
+                          } catch (error) {
+                            toast({
+                              title: 'Error',
+                              description: error instanceof Error ? error.message : 'Failed to send Instagram DM',
+                              status: 'error',
+                              duration: 3000,
+                            });
+                          } finally {
+                            setIsSendingDM(false);
+                          }
+                        }
+                      }}
+                      isLoading={isSendingDM}
+                      loadingText="Sending DM"
+                      leftIcon={<span role="img" aria-label="instagram">📱</span>}
+                    >
+                      Send via Instagram DM
+                    </Button>
+                    
+                    <Button
                       colorScheme="gray"
                       variant="outline"
                       onClick={async () => {
@@ -1266,14 +1449,8 @@ export default function Home() {
                   </Box>
                   
                   <Box>
-                    {!selectedInfluencer?.email && (
-                      <Text color="red.500" fontSize="sm">
-                        No email address available for this influencer
-                      </Text>
-                    )}
-                    
-                    {selectedInfluencer?.email_sent && (
-                      <Box p={2} bg="green.50" borderRadius="md" borderLeft="3px solid" borderColor="green.500">
+                    {!!selectedInfluencer?.email_sent && (
+                      <Box p={2} bg="green.50" borderRadius="md" borderLeft="3px solid" borderColor="green.500" mb={2}>
                         <Text color="green.600" fontWeight="medium" fontSize="sm">
                           Email was sent on {selectedInfluencer.email_sent_at ? 
                             new Date(selectedInfluencer.email_sent_at as string).toLocaleString() : 
@@ -1282,6 +1459,20 @@ export default function Home() {
                         </Text>
                         <Text color="green.500" fontSize="xs" mt={1}>
                           You can edit and resend the email if needed
+                        </Text>
+                      </Box>
+                    )}
+                    
+                    {!!selectedInfluencer?.dm_sent && (
+                      <Box p={2} bg="purple.50" borderRadius="md" borderLeft="3px solid" borderColor="purple.500">
+                        <Text color="purple.600" fontWeight="medium" fontSize="sm">
+                          Instagram DM was sent on {selectedInfluencer.dm_sent_at ? 
+                            new Date(selectedInfluencer.dm_sent_at as string).toLocaleString() : 
+                            'unknown date'
+                          }
+                        </Text>
+                        <Text color="purple.500" fontSize="xs" mt={1}>
+                          You can send another DM if needed
                         </Text>
                       </Box>
                     )}

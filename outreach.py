@@ -271,72 +271,50 @@ async def extract_emails_from_bios(profiles: Dict[str, Dict[str, Any]]) -> Dict[
 async def main():
     progress_update("start", "Starting outreach process...", {"percent": 5})
     db = DatabaseHelper()
-    max_retry_attempts = 3
-    current_attempt = 0
-    initial_limit = None
     
-    while current_attempt < max_retry_attempts:
-        # Get usernames from hashtags - 5-20% of progress
-        # If all usernames are already in the DB, the scraper will automatically increase the results limit and retry
-        progress_update("hashtags", f"Getting usernames from hashtags (attempt {current_attempt+1}/{max_retry_attempts})", 
-                        {"attempt": current_attempt+1, "max_attempts": max_retry_attempts, "percent": 10})
-        scraper = HashtagScraper()
-        usernames = await scraper.get_usernames_from_hashtags(max_retries=3, initial_limit=initial_limit)
-        usernames = list(usernames)
-        
-        # For testing - limit the number of usernames
-        original_count = len(usernames)
-        test_mode = False
-        if test_mode and original_count > 10:
-            progress_update("hashtags", f"Testing mode: Limiting to 10 usernames out of {original_count}", 
-                           {"original_count": original_count, "limited_count": 10, "test_mode": True, "percent": 15})
-            usernames = usernames[:10]
-        
-        progress_update("hashtags", f"Found {len(usernames)} usernames", 
-                       {"username_count": len(usernames), "usernames": usernames, "percent": 20})
-        
-        # Get user profiles - 20-40% of progress
-        progress_update("profiles", "Fetching user profiles...", {"username_count": len(usernames), "percent": 25})
-        user_profiles = await get_user_profiles(usernames)
-        progress_update("profiles", f"Fetched {len(user_profiles)} user profiles", 
-                       {"profile_count": len(user_profiles), "percent": 40})
-        
-        # Extract emails - 40-60% of progress
-        progress_update("emails", "Extracting emails from user bios...", {"profile_count": len(user_profiles), "percent": 45})
-        emails = await extract_emails_from_bios(user_profiles)
-        # Count valid emails (not None and not "null" string)
-        email_count = len([e for e in emails.values() if e and e != "null"])
-        progress_update("emails", f"Found {email_count} valid emails out of {len(usernames)} usernames", 
-                       {"email_count": email_count, "username_count": len(usernames), "percent": 55})
-        
-        # Filter usernames to only process those with valid emails (not null)
-        filtered_usernames = [username for username in usernames 
-                             if emails.get(username) and emails.get(username) != "null"]
-        progress_update("emails", f"Found {len(filtered_usernames)} usernames with valid email", 
-                       {"filtered_count": len(filtered_usernames), "percent": 60})
-        
-        # If no emails were found or no usernames with emails were found,
-        # and we haven't reached the maximum number of retries, increase the result limit and try again
-        if (email_count == 0 or len(filtered_usernames) == 0) and current_attempt < max_retry_attempts - 1:
-            current_attempt += 1
-            
-            # Determine the new limit - either double or add 50, whichever is lower
-            current_limit = initial_limit or scraper.results_limit
-            increase_by_double = current_limit * 2
-            increase_by_50 = current_limit + 50
-            
-            # Use the smaller increase
-            initial_limit = min(increase_by_double, increase_by_50)
-            
-            progress_update("retry", f"No emails found. Attempt {current_attempt}/{max_retry_attempts}: Increasing result limit to {initial_limit}",
-                           {"attempt": current_attempt, "max_attempts": max_retry_attempts, "new_limit": initial_limit})
-            
-            # Reset progress for next attempt
-            progress_update("hashtags", "Retrying with increased limit...", {"percent": 10})
-            continue
-        
-        # If we found emails or reached the maximum number of retries, break the loop
-        break
+    # Get usernames from hashtags - 5-20% of progress
+    progress_update("hashtags", "Getting usernames from hashtags...", {"percent": 10})
+    scraper = HashtagScraper()
+    usernames = await scraper.get_usernames_from_hashtags()
+    usernames = list(usernames)
+    
+    # For testing - limit the number of usernames
+    original_count = len(usernames)
+    test_mode = False
+    if test_mode and original_count > 10:
+        progress_update("hashtags", f"Testing mode: Limiting to 10 usernames out of {original_count}", 
+                       {"original_count": original_count, "limited_count": 10, "test_mode": True, "percent": 15})
+        usernames = usernames[:10]
+    
+    progress_update("hashtags", f"Found {len(usernames)} usernames", 
+                   {"username_count": len(usernames), "usernames": usernames, "percent": 20})
+    
+    # Get user profiles - 20-40% of progress
+    progress_update("profiles", "Fetching user profiles...", {"username_count": len(usernames), "percent": 25})
+    user_profiles = await get_user_profiles(usernames)
+    progress_update("profiles", f"Fetched {len(user_profiles)} user profiles", 
+                   {"profile_count": len(user_profiles), "percent": 40})
+    
+    # Extract emails - 40-60% of progress
+    progress_update("emails", "Extracting emails from user bios...", {"profile_count": len(user_profiles), "percent": 45})
+    emails = await extract_emails_from_bios(user_profiles)
+    # Count valid emails (not None and not "null" string)
+    email_count = len([e for e in emails.values() if e and e != "null"])
+    progress_update("emails", f"Found {email_count} valid emails out of {len(usernames)} usernames", 
+                   {"email_count": email_count, "username_count": len(usernames), "percent": 55})
+    
+    # Process all usernames, including those without emails
+    filtered_usernames = usernames
+    usernames_with_email = [username for username in usernames 
+                           if emails.get(username) and emails.get(username) != "null"]
+    usernames_without_email = [username for username in usernames 
+                             if not emails.get(username) or emails.get(username) == "null"]
+    
+    progress_update("emails", f"Processing all {len(filtered_usernames)} usernames: {len(usernames_with_email)} with email, {len(usernames_without_email)} without email", 
+                   {"filtered_count": len(filtered_usernames), 
+                    "with_email": len(usernames_with_email),
+                    "without_email": len(usernames_without_email),
+                    "percent": 60})
     
     # Update the user_profiles dictionary with emails
     for username, email in emails.items():
@@ -348,7 +326,7 @@ async def main():
     ctrl = Controller(output_model=Influencer)
     
     # We already calculated filtered_usernames above
-    progress_update("browser", f"Processing {len(filtered_usernames)} usernames with emails", 
+    progress_update("browser", f"Processing {len(filtered_usernames)} usernames (all accounts including those without emails)", 
                    {"username_count": len(filtered_usernames), "usernames": filtered_usernames, "percent": 60})
     
     # Calculate progress increments for each username
