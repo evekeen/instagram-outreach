@@ -60,6 +60,8 @@ export async function POST(request: NextRequest) {
     3. Be concise and engaging
     4. Include a clear call to action
 
+    Do not use markdown, use plain text formatting. No bullshit, be professional and direct. Outline the benefits and the value proposition.
+
     My signature:
     "Best regards, 
       Alexander."
