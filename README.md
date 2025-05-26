@@ -2,8 +2,6 @@
 
 *Author: Alexander Ivkin*  
 **https://ivkin.dev**  
-**https://www.linkedin.com/in/evekeen/**  
-**https://github.com/evekeen**  
 
 ## 🎯 Overview
 
@@ -191,7 +189,3 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 MIT
 
 This project is for educational and business use. Please respect Instagram's terms of service and applicable privacy laws when using this tool.
-
----
-
-### Let's build businesses together and have fun 🙂
