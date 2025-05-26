@@ -40,8 +40,8 @@ An AI-powered tool for discovering Instagram influencers, extracting their conta
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd marketing-outreach
+git clone https://github.com/evekeen/instagram-outreach
+cd instagram-outreach
 
 # Install Node.js dependencies
 npm install
@@ -132,12 +132,6 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 4. Track sent status in the main table
 5. Resend or edit emails as needed
 
-### 5. Manage Your Database
-
-- **Filter Options**: Use checkboxes to filter by email availability and influencer status
-- **Reset Database**: Use the "Reset Database" button to clear all data
-- **View Progress**: Monitor discovery process in real-time
-
 ## 📊 Understanding the Process
 
 ### Discovery Workflow
@@ -152,18 +146,15 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 The AI considers:
 - Influencer's bio and content style
-- Personalized messaging based on their niche
 - Your affiliate program details (15% revenue share, free app access)
-- Professional tone with clear call-to-action
 
 ## 🔧 Configuration
 
 ### Customizing Search Parameters
 
-Edit `scraper.py` to modify:
+Edit `.env` to set:
 - Target hashtags
 - Search limits
-- Geographic targeting
 
 ### Email Template Customization
 
