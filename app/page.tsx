@@ -27,7 +27,6 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [isRegenerating, setIsRegenerating] = useState<boolean>(false);
   const [isSendingDM, setIsSendingDM] = useState<boolean>(false);
-  const [showOnlyWithEmail, setShowOnlyWithEmail] = useState<boolean>(true);
   const [showOnlyInfluencers, setShowOnlyInfluencers] = useState<boolean>(true);
   const [filteredInfluencers, setFilteredInfluencers] = useState<Influencer[]>([]);
   const [isOutreachModalOpen, setIsOutreachModalOpen] = useState<boolean>(false);
@@ -37,8 +36,13 @@ export default function Home() {
   const [currentStage, setCurrentStage] = useState<ProgressStage | null>(null);
   const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
   const [isResetting, setIsResetting] = useState<boolean>(false);
+  const [isYoloModalOpen, setIsYoloModalOpen] = useState<boolean>(false);
+  const [isRunningYolo, setIsRunningYolo] = useState<boolean>(false);
+  const [yoloLogs, setYoloLogs] = useState<string[]>([]);
+  const [yoloProgress, setYoloProgress] = useState<any>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const yoloLogsEndRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
   const isFirstRenderRef = useRef<boolean>(true);
 
@@ -188,10 +192,6 @@ export default function Home() {
   const applyFilters = () => {
     let filtered = [...influencers];
     
-    if (showOnlyWithEmail) {
-      filtered = filtered.filter(inf => inf.email);
-    }
-    
     if (showOnlyInfluencers) {
       filtered = filtered.filter(inf => inf.is_influencer);
     }
@@ -212,7 +212,7 @@ export default function Home() {
   // Effect to apply filters whenever influencers or filter settings change
   useEffect(() => {
     applyFilters();
-  }, [influencers, showOnlyWithEmail, showOnlyInfluencers]);
+  }, [influencers, showOnlyInfluencers]);
 
   // Replace the useEffect to use the new function and check process status on mount
   useEffect(() => {
@@ -741,6 +741,190 @@ export default function Home() {
     }
   };
 
+  // YOLO process functions
+  const [yoloPollingInterval, setYoloPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  
+  const checkYoloStatus = async () => {
+    try {
+      const response = await fetch('/api/yolo-status');
+      const data = await response.json();
+      
+      if (data.status === 'running') {
+        setIsRunningYolo(true);
+        
+        if (data.progress) {
+          setYoloProgress(data.progress);
+          
+          // Add to logs
+          if (data.progress.message) {
+            setYoloLogs(prev => [...prev, `${data.progress.stage}: ${data.progress.message}`]);
+          }
+        }
+        
+        // Start polling if not already polling
+        if (!yoloPollingInterval) {
+          const interval = setInterval(pollYoloStatus, 1000);
+          setYoloPollingInterval(interval);
+        }
+      } else if (data.status === 'complete' || data.status === 'error') {
+        setIsRunningYolo(false);
+        
+        if (yoloPollingInterval) {
+          clearInterval(yoloPollingInterval);
+          setYoloPollingInterval(null);
+        }
+        
+        if (data.status === 'complete') {
+          toast({
+            title: 'YOLO Complete',
+            description: data.progress?.message || 'Automated outreach completed successfully',
+            status: 'success',
+            duration: 5000,
+            isClosable: true,
+          });
+          
+          // Refresh influencer list
+          fetchInfluencersWithLoading();
+        } else {
+          toast({
+            title: 'YOLO Error',
+            description: data.progress?.message || 'An error occurred during YOLO process',
+            status: 'error',
+            duration: 5000,
+            isClosable: true,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error checking YOLO status:', error);
+    }
+  };
+  
+  const pollYoloStatus = async () => {
+    try {
+      const response = await fetch('/api/yolo-status');
+      const data = await response.json();
+      
+      if (data.progress) {
+        setYoloProgress(data.progress);
+        
+        if (data.progress.message && !yoloLogs.includes(`${data.progress.stage}: ${data.progress.message}`)) {
+          setYoloLogs(prev => [...prev, `${data.progress.stage}: ${data.progress.message}`]);
+        }
+      }
+      
+      if (data.status !== 'running') {
+        setIsRunningYolo(false);
+        
+        if (yoloPollingInterval) {
+          clearInterval(yoloPollingInterval);
+          setYoloPollingInterval(null);
+        }
+        
+        if (data.status === 'complete') {
+          toast({
+            title: 'YOLO Complete!',
+            description: 'Automated outreach process finished successfully',
+            status: 'success',
+            duration: 7000,
+            isClosable: true,
+          });
+          fetchInfluencersWithLoading();
+        }
+      }
+    } catch (error) {
+      console.error('Error polling YOLO status:', error);
+    }
+  };
+  
+  const runYolo = async () => {
+    setYoloLogs([]);
+    setYoloProgress(null);
+    
+    try {
+      const response = await fetch('/api/run-yolo');
+      const data = await response.json();
+      
+      if (data.status === 'started') {
+        setIsRunningYolo(true);
+        setYoloLogs(['Starting YOLO automated outreach process...']);
+        
+        // Start polling for status
+        const interval = setInterval(pollYoloStatus, 1000);
+        setYoloPollingInterval(interval);
+      } else if (data.status === 'already_running') {
+        toast({
+          title: 'Already Running',
+          description: 'YOLO process is already running',
+          status: 'info',
+          duration: 3000,
+        });
+        setIsRunningYolo(true);
+      } else {
+        toast({
+          title: 'Error',
+          description: data.message || 'Failed to start YOLO process',
+          status: 'error',
+          duration: 5000,
+        });
+      }
+    } catch (error) {
+      console.error('Error starting YOLO:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to start YOLO process',
+        status: 'error',
+        duration: 5000,
+      });
+    }
+  };
+  
+  const stopYolo = async () => {
+    try {
+      const response = await fetch('/api/run-yolo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'stop' })
+      });
+      
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        setYoloLogs(prev => [...prev, 'Stop command sent...']);
+        toast({
+          title: 'Stopping YOLO',
+          description: 'Stop command sent. Process will stop shortly.',
+          status: 'info',
+          duration: 3000,
+        });
+      }
+    } catch (error) {
+      console.error('Error stopping YOLO:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to stop YOLO process',
+        status: 'error',
+        duration: 3000,
+      });
+    }
+  };
+  
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => {
+      if (yoloPollingInterval) {
+        clearInterval(yoloPollingInterval);
+      }
+    };
+  }, [yoloPollingInterval]);
+  
+  // Check YOLO status when modal opens
+  useEffect(() => {
+    if (isYoloModalOpen) {
+      checkYoloStatus();
+    }
+  }, [isYoloModalOpen]);
+
   const resetDatabase = async () => {
     try {
       setIsResetting(true);
@@ -839,6 +1023,20 @@ export default function Home() {
         
         <Box display="flex" gap={2}>
           <Button
+            colorScheme="green"
+            leftIcon={<span role="img" aria-label="rocket">🚀</span>}
+            onClick={() => setIsYoloModalOpen(true)}
+            size="lg"
+            fontWeight="bold"
+            bgGradient="linear(to-r, green.400, teal.500)"
+            _hover={{
+              bgGradient: "linear(to-r, green.500, teal.600)",
+            }}
+          >
+            YOLO
+          </Button>
+          
+          <Button
             colorScheme="purple"
             leftIcon={<span role="img" aria-label="search">🔍</span>}
             onClick={() => setIsOutreachModalOpen(true)}
@@ -857,31 +1055,6 @@ export default function Home() {
         </Box>
         
         <Box>
-          <Box display="flex" gap={4} alignItems="center" mb={1}>
-          <Box 
-            as="label" 
-            display="flex" 
-            alignItems="center" 
-            cursor="pointer"
-            padding="2"
-            borderRadius="md"
-            bgColor={showOnlyWithEmail ? "blue.100" : "transparent"}
-            border="1px solid"
-            borderColor={showOnlyWithEmail ? "blue.300" : "gray.200"}
-            boxShadow={showOnlyWithEmail ? "0 0 0 1px blue.200" : "none"}
-            transition="all 0.2s"
-          >
-            <input 
-              type="checkbox" 
-              checked={showOnlyWithEmail} 
-              onChange={() => setShowOnlyWithEmail(!showOnlyWithEmail)}
-              style={{ marginRight: '8px' }}
-            />
-            <Text fontSize="sm" fontWeight={showOnlyWithEmail ? "bold" : "medium"} color={showOnlyWithEmail ? "blue.700" : "gray.700"}>
-              Only with Email
-            </Text>
-          </Box>
-          
           <Box 
             as="label" 
             display="flex" 
@@ -904,7 +1077,6 @@ export default function Home() {
             <Text fontSize="sm" fontWeight={showOnlyInfluencers ? "bold" : "medium"} color={showOnlyInfluencers ? "green.700" : "gray.700"}>
               Only Influencers
             </Text>
-          </Box>                   
           </Box>                    
         </Box>
       </Box>
@@ -920,7 +1092,9 @@ export default function Home() {
               <Text fontSize="lg">
                 {influencers.length === 0 
                   ? "No influencers found in the database" 
-                  : `No influencers match the current filters. Try ${!showOnlyWithEmail ? 'including influencers without email' : ''}${!showOnlyWithEmail && !showOnlyInfluencers ? ' or ' : ''}${!showOnlyInfluencers ? 'including non-influencers' : ''}`}
+                  : !showOnlyInfluencers 
+                    ? "No influencers match the current filters"
+                    : "No influencers found. Try unchecking 'Only Influencers' to see all users."}
               </Text>
             </Center>
           ) : (
@@ -1824,6 +1998,180 @@ export default function Home() {
                     onClick={stopOutreach}
                   >
                     Stop Process
+                  </Button>
+                )}
+              </Box>
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+      
+      {/* YOLO Modal */}
+      <Modal 
+        isOpen={isYoloModalOpen} 
+        onClose={() => !isRunningYolo && setIsYoloModalOpen(false)} 
+        size="xl"
+      >
+        <ModalOverlay bg="blackAlpha.300" backdropFilter="blur(10px)" />
+        <ModalContent
+          maxWidth="800px"
+          minHeight="500px"
+          boxShadow="xl"
+          borderRadius="xl"
+        >
+          <ModalHeader display="flex" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Heading size="lg" bgGradient="linear(to-r, green.400, teal.500)" bgClip="text">
+                YOLO - Automated Outreach
+              </Heading>
+              <Text fontSize="sm" color="gray.500" mt={1}>
+                Automatically find influencers and send personalized outreach via email or Instagram DM
+              </Text>
+            </Box>
+            {!isRunningYolo && (
+              <ModalCloseButton position="static" />
+            )}
+          </ModalHeader>
+          
+          <ModalBody pb={6}>
+            {!isRunningYolo && yoloLogs.length === 0 ? (
+              <Box>
+                <Text mb={4} fontWeight="bold">
+                  This automated process will:
+                </Text>
+                <Box pl={4} mb={6}>
+                  <Text mb={2}>🔍 1. Search for new influencers from hashtags</Text>
+                  <Text mb={2}>👤 2. Fetch their profile information</Text>
+                  <Text mb={2}>✉️ 3. Extract email addresses from bios</Text>
+                  <Text mb={2}>🎯 4. Verify influencer status (view counts)</Text>
+                  <Text mb={2}>🤖 5. Generate personalized messages using AI</Text>
+                  <Text mb={2}>📤 6. Send outreach via email (if available) or Instagram DM</Text>
+                </Box>
+                
+                <Box 
+                  p={4} 
+                  bg="orange.50" 
+                  borderRadius="md" 
+                  borderLeft="4px solid" 
+                  borderColor="orange.500" 
+                  mb={6}
+                >
+                  <Text fontWeight="bold" color="orange.700">⚠️ Important:</Text>
+                  <Text fontSize="sm" color="orange.600" mt={1}>
+                    This process runs automatically and will send messages to influencers without manual review. 
+                    Make sure your message templates and settings are configured correctly.
+                  </Text>
+                </Box>
+                
+                <Button
+                  colorScheme="green"
+                  size="lg"
+                  width="100%"
+                  height="60px"
+                  onClick={runYolo}
+                  leftIcon={<span role="img" aria-label="rocket">🚀</span>}
+                  bgGradient="linear(to-r, green.400, teal.500)"
+                  _hover={{
+                    bgGradient: "linear(to-r, green.500, teal.600)",
+                  }}
+                >
+                  Start YOLO Process
+                </Button>
+              </Box>
+            ) : (
+              <Box>
+                {/* Progress display */}
+                {yoloProgress && (
+                  <Box mb={6}>
+                    <Text fontWeight="bold" mb={2}>Current Progress:</Text>
+                    
+                    {yoloProgress.percent && (
+                      <Progress 
+                        value={yoloProgress.percent} 
+                        size="lg" 
+                        colorScheme="green"
+                        borderRadius="md"
+                        hasStripe
+                        isAnimated
+                        mb={4}
+                      />
+                    )}
+                    
+                    {yoloProgress.stage && (
+                      <Badge 
+                        colorScheme={
+                          yoloProgress.stage === 'complete' ? 'green' : 
+                          yoloProgress.stage === 'error' ? 'red' : 
+                          'blue'
+                        } 
+                        p={2} 
+                        borderRadius="md"
+                      >
+                        {yoloProgress.stage.charAt(0).toUpperCase() + yoloProgress.stage.slice(1)}
+                      </Badge>
+                    )}
+                    
+                    {yoloProgress.data && (
+                      <Box mt={3} p={3} bg="gray.50" borderRadius="md">
+                        <Text fontSize="sm" fontWeight="bold">Details:</Text>
+                        <Code fontSize="xs" mt={1}>
+                          {JSON.stringify(yoloProgress.data, null, 2)}
+                        </Code>
+                      </Box>
+                    )}
+                  </Box>
+                )}
+                
+                {/* Activity logs */}
+                <Box mb={4}>
+                  <Text fontWeight="bold" mb={2}>Activity Log:</Text>
+                  <Box 
+                    maxHeight="300px" 
+                    overflowY="auto" 
+                    p={3} 
+                    borderRadius="md" 
+                    bg="gray.50"
+                    border="1px solid"
+                    borderColor="gray.200"
+                    fontFamily="mono"
+                    fontSize="xs"
+                  >
+                    {yoloLogs.length > 0 ? (
+                      yoloLogs.map((log, index) => (
+                        <Text key={index} mb={1}>
+                          {log}
+                        </Text>
+                      ))
+                    ) : (
+                      <Text color="gray.500">Waiting for process to start...</Text>
+                    )}
+                    <div ref={yoloLogsEndRef} />
+                  </Box>
+                </Box>
+                
+                {/* Action buttons */}
+                {yoloProgress?.stage === 'complete' || yoloProgress?.stage === 'error' ? (
+                  <Button
+                    colorScheme={yoloProgress.stage === 'complete' ? "green" : "blue"}
+                    width="100%"
+                    onClick={() => {
+                      setYoloLogs([]);
+                      setYoloProgress(null);
+                      setIsRunningYolo(false);
+                      setIsYoloModalOpen(false);
+                    }}
+                  >
+                    {yoloProgress.stage === 'complete' ? 'Done - View Results' : 'Close'}
+                  </Button>
+                ) : (
+                  <Button
+                    colorScheme="red"
+                    variant="outline"
+                    width="100%"
+                    onClick={stopYolo}
+                    isDisabled={!isRunningYolo}
+                  >
+                    Stop YOLO Process
                   </Button>
                 )}
               </Box>
